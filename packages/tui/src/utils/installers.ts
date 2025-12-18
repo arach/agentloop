@@ -36,7 +36,7 @@ export const installers: Record<InstallerId, InstallerSpec> = {
     ],
     run: () => {
       const root = repoRoot();
-      return { cmd: ["bash", path.join(root, "scripts/kokomo/install.sh"), "--yes", "--upgrade"], cwd: root };
+      return { cmd: ["bash", path.join(root, "scripts/services/kokomo/install.sh"), "--yes", "--upgrade"], cwd: root };
     },
   },
   mlx: {
@@ -50,7 +50,7 @@ export const installers: Record<InstallerId, InstallerSpec> = {
     ],
     run: () => {
       const root = repoRoot();
-      return { cmd: ["bash", path.join(root, "scripts/mlx/install.sh"), "--yes", "--upgrade"], cwd: root };
+      return { cmd: ["bash", path.join(root, "scripts/services/mlx/install.sh"), "--yes", "--upgrade"], cwd: root };
     },
   },
   vlm: {
@@ -64,7 +64,7 @@ export const installers: Record<InstallerId, InstallerSpec> = {
     ],
     run: () => {
       const root = repoRoot();
-      return { cmd: ["bash", path.join(root, "scripts/vlm/install.sh"), "--yes", "--upgrade"], cwd: root };
+      return { cmd: ["bash", path.join(root, "scripts/services/vlm/install.sh"), "--yes", "--upgrade"], cwd: root };
     },
   },
   "mlx-model": {

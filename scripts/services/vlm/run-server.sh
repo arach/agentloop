@@ -19,5 +19,4 @@ export VLM_MODEL="${VLM_MODEL:-mlx-community/llava-v1.6-mistral-7b-4bit}"
 export VLM_MAX_TOKENS="${VLM_MAX_TOKENS:-256}"
 export VLM_TEMPERATURE="${VLM_TEMPERATURE:-0.2}"
 
-exec "$PY" "$ROOT_DIR/scripts/vlm/server.py" --host "$VLM_HOST" --port "$VLM_PORT" --model "$VLM_MODEL"
-
+exec "$PY" "$ROOT_DIR/scripts/services/vlm/server.py" --host "$VLM_HOST" --port "$VLM_PORT" --model "$VLM_MODEL"

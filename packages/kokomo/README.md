@@ -43,7 +43,7 @@ bun run kokomo:say-local -- "hello there" # local (no server)
 If you want AgentLoop to start/stop Kokomo for you, run the engine with either:
 
 - Your own `KOKOMO_CMD`/`KOKOMO_CMD_JSON`, or
-- The built-in local wrapper (`scripts/kokomo/run-server.sh`) by opting into `KOKOMO_USE_DEFAULTS=1`.
+- The built-in local wrapper (`scripts/services/kokomo/run-server.sh`) by opting into `KOKOMO_USE_DEFAULTS=1`.
 
 ```sh
 export AGENTLOOP_MANAGE_KOKOMO=1

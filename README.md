@@ -1,29 +1,24 @@
 # AgentLoop
 
-A reusable terminal-based agent loop harness built with Bun + TypeScript. Provides a beautiful TUI for interacting with an agentic backend.
+Local-first agent runtime + service manager with a fast terminal UI (Bun + TypeScript + OpenTUI).
 
 ## Features
 
-- Beautiful terminal UI with splash screen
-- Real-time streaming responses
-- WebSocket-based communication between TUI and engine
-- Modular architecture for easy integration
-- Session management
-- Keyboard shortcuts
+- OpenTUI-based TUI with textarea input, selection, panels, splash/about
+- WebSocket engine with streaming `assistant.token` output
+- Managed local services with logs + lifecycle controls:
+  - `kokomo` (TTS)
+  - `mlx` (LLM)
+  - `vlm` (VLM)
+- Explicit in-TUI installers (`/install ... --yes`) that install into `external/` (gitignored)
 
 ## Architecture
 
-```
-packages/
-├── core/      # Shared types, protocol definitions, utilities
-├── engine/    # WebSocket server that runs the agent loop
-├── tui/       # Terminal user interface (Ink + React)
-└── kokomo/    # Optional CLI bridge to a Kokomo TTS service
-```
+See `docs/architecture.md`.
 
 ## Project Status
 
-This repo is a working UI + engine scaffold: the TUI is functional, and the engine currently streams stubbed responses (no real LLM/tools yet). More detail: `docs/state.md`.
+This repo is a working prototype: TUI + engine + local services. More detail: `docs/state.md`.
 
 ## Quick Start
 
@@ -38,6 +33,13 @@ bun run engine
 bun run tui
 ```
 
+In the TUI:
+
+- `/install kokomo --yes` → `/service kokomo start` → `/say hello from agentloop`
+- `/install mlx --yes` → `/service mlx start` → chat normally (engine uses MLX while running)
+
+Demo sequences: `docs/demo.md`.
+
 ### Engine management (stop/restart/ports)
 
 - Stop the engine: `Ctrl+C` in the engine terminal.
@@ -47,21 +49,27 @@ bun run tui
   - TUI: `bun run tui -- --port 7778`
 - Random free port (engine): `bun run engine -- --random-port` (prints the chosen `ws://...` URL on startup).
 
-## Keyboard Shortcuts
+## Services
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Ctrl+N` | New session |
-| `Ctrl+R` | Reconnect to engine |
-| `Ctrl+C` | Quit |
+| Service | Purpose | Install | Start (TUI) | Default |
+|---|---|---|---|---|
+| `kokomo` | local TTS | `bun run kokomo:install -- --yes` | `/service kokomo start` | `http://127.0.0.1:8880` |
+| `mlx` | local LLM | `bun run mlx:install -- --yes` | `/service mlx start` | `http://127.0.0.1:12345` |
+| `vlm` | local VLM | `bun run vlm:install -- --yes` | `/service vlm start` | `http://127.0.0.1:12346` |
+
+Service docs:
+
+- `docs/services/kokomo.md`
+- `docs/services/mlx.md`
+- `docs/services/vlm.md`
 
 ## TUI Commands
 
-Type these into the message box:
-
 - `/help`
-- `/service kokomo start|stop|status` (also: `/kokomo start|stop|status`)
+- `/install list`
+- `/install kokomo|mlx|vlm --yes`
+- `/service kokomo|mlx|vlm start|stop|status`
+- `/say <text>` (TTS)
 
 ## Local TTS (Kokomo defaults)
 
@@ -127,7 +135,7 @@ Environment variables:
 - `AGENTLOOP_MANAGE_VLM` - If `1`, the engine will auto-start the MLX VLM service on boot.
 - `KOKOMO_CMD` - Command string to launch Kokomo (overrides defaults).
 - `KOKOMO_CMD_JSON` - Same as above, but as a JSON array of args (overrides defaults).
-- `KOKOMO_USE_DEFAULTS` - If `1`, uses `bash scripts/kokomo/run-server.sh` when no command is provided.
+- `KOKOMO_USE_DEFAULTS` - If `1`, uses `bash scripts/services/kokomo/run-server.sh` when no command is provided.
 - `AGENTLOOP_KOKOMO_LOCAL` - Single-switch for local MLX defaults (implies `KOKOMO_USE_DEFAULTS=1`).
 - `KOKOMO_HOST` - Default Kokomo host for the built-in wrapper (default: `127.0.0.1`).
 - `KOKOMO_PORT` - Default Kokomo port for the built-in wrapper (default: `8880`).

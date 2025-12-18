@@ -20,5 +20,4 @@ export MLX_MAX_TOKENS="${MLX_MAX_TOKENS:-256}"
 export MLX_TEMPERATURE="${MLX_TEMPERATURE:-0.2}"
 export MLX_TOP_P="${MLX_TOP_P:-0.9}"
 
-exec "$PY" "$ROOT_DIR/scripts/mlx/server.py" --host "$MLX_HOST" --port "$MLX_PORT" --model "$MLX_MODEL"
-
+exec "$PY" "$ROOT_DIR/scripts/services/mlx/server.py" --host "$MLX_HOST" --port "$MLX_PORT" --model "$MLX_MODEL"

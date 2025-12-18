@@ -135,4 +135,4 @@ if ! "$VENV_DIR/bin/python" -c "import spacy; spacy.load('en_core_web_sm')" >/de
 fi
 
 echo "[kokomo] done" >&2
-echo "[kokomo] run server: bash $ROOT_DIR/scripts/kokomo/run-server.sh" >&2
+echo "[kokomo] run server: bash $ROOT_DIR/scripts/services/kokomo/run-server.sh" >&2

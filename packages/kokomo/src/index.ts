@@ -368,7 +368,7 @@ async function ensureServerRunning(baseUrl: string, timeoutMs: number, quiet: bo
   }
 
   const repoRoot = getRepoRoot();
-  const script = path.join(repoRoot, "scripts/kokomo/run-server.sh");
+  const script = path.join(repoRoot, "scripts/services/kokomo/run-server.sh");
   const venvPy = path.join(repoRoot, "external/kokomo-mlx/.venv/bin/python");
 
   if (!(await fileExists(script)) || !(await fileExists(venvPy))) {

@@ -9,7 +9,7 @@ PY="$VENV_DIR/bin/python"
 
 if [[ ! -x "$PY" ]]; then
   echo "[kokomo] venv not found at: $PY" >&2
-  echo "[kokomo] run: bash scripts/kokomo/install.sh --yes" >&2
+  echo "[kokomo] run: bash scripts/services/kokomo/install.sh --yes" >&2
   exit 1
 fi
 
@@ -17,4 +17,4 @@ export KOKOMO_HOST="${KOKOMO_HOST:-127.0.0.1}"
 export KOKOMO_PORT="${KOKOMO_PORT:-8880}"
 export KOKOMO_MODEL="${KOKOMO_MODEL:-mlx-community/Kokoro-82M-bf16}"
 
-exec "$PY" "$ROOT_DIR/scripts/kokomo/server.py" --host "$KOKOMO_HOST" --port "$KOKOMO_PORT" --model "$KOKOMO_MODEL"
+exec "$PY" "$ROOT_DIR/scripts/services/kokomo/server.py" --host "$KOKOMO_HOST" --port "$KOKOMO_PORT" --model "$KOKOMO_MODEL"

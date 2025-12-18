@@ -61,7 +61,7 @@ function kokomoConfigFromEnv(): KokomoConfig {
   }
 
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/kokomo/run-server.sh");
+  const scriptPath = path.join(repoRoot, "scripts/services/kokomo/run-server.sh");
   const venvPython = path.join(repoRoot, "external/kokomo-mlx/.venv/bin/python");
 
   const kokomoLocal = envBool("AGENTLOOP_KOKOMO_LOCAL", false);
@@ -102,7 +102,7 @@ function mlxConfigFromEnv(): MlxConfig {
   }
 
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/mlx/run-server.sh");
+  const scriptPath = path.join(repoRoot, "scripts/services/mlx/run-server.sh");
   const venvPython = path.join(repoRoot, "external/mlx-llm/.venv/bin/python");
 
   // Sensible defaults:
@@ -136,7 +136,7 @@ function vlmConfigFromEnv(): VlmConfig {
   }
 
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/vlm/run-server.sh");
+  const scriptPath = path.join(repoRoot, "scripts/services/vlm/run-server.sh");
   const venvPython = path.join(repoRoot, "external/mlx-vlm/.venv/bin/python");
   const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
   if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
