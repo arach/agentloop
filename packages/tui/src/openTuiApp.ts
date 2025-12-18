@@ -894,17 +894,39 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return { tag: { fg: theme.bg, bg: theme.dim2 }, body: theme.dim, header: theme.dim2 };
     };
 
+    const isLogLikeSystemMessage = (text: string): boolean => {
+      const first = (text ?? "").trimStart();
+      if (!first) return false;
+      if (first.startsWith("[install:")) return true;
+      if (first.startsWith("[service]")) return true;
+      if (first.startsWith("[tool]")) return true;
+      if (first.startsWith("[say]")) return true;
+      if (first.startsWith("$ ")) return true;
+      if (first.startsWith("! ")) return true;
+      if (first.startsWith("[kokomo]") || first.startsWith("[mlx]") || first.startsWith("[vlm]")) return true;
+      // Generic bracketed log prefix: [something] ...
+      if (/^\[[A-Za-z0-9_.:-]+\]/.test(first)) return true;
+      return false;
+    };
+
     const renderMessage = (m: Message) => {
       const s = roleStyles(m.role);
       const time = formatTime(m.timestamp);
       const title =
         m.role === "user" ? "YOU" : m.role === "assistant" ? "AGENT" : "LOOP";
 
-      pushLine(
-        t`${tag(title, s.tag)} ${fg(s.header)(dim(time))}`
-      );
-
       const body = m.content.trimEnd();
+
+      // For system log output, don't add extra headers/timestamps that break up the log stream.
+      if (m.role === "system" && isLogLikeSystemMessage(body)) {
+        for (const line of (body || "").split(/\r?\n/)) {
+          pushLine(t`${fg(theme.dim2)(line)}`);
+        }
+        return;
+      }
+
+      pushLine(t`${tag(title, s.tag)} ${fg(s.header)(dim(time))}`);
+
       if (!body) {
         pushLine(t`${fg(s.body)(dim("(empty)"))}`);
         pushLine(t``);
