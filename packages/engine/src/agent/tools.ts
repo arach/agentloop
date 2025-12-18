@@ -28,7 +28,21 @@ export function toolSystemPrompt(repoRoot: string): string {
     "Rules:",
     "- Only use repo-relative paths for fs.* tools.",
     "- Call at most one tool at a time; wait for TOOL_RESULT in the next message before continuing.",
+    "- Never output TOOL_RESULT yourself. The system will provide it.",
+    "- Do not include TOOL_CALL or TOOL_RESULT in your final user-facing answer.",
   ].join("\n");
+}
+
+export function stripToolProtocol(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("TOOL_CALL:")) continue;
+    if (trimmed.startsWith("TOOL_RESULT:")) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
 }
 
 export function parseToolCallFromText(text: string): ToolCallInput | null {
@@ -128,4 +142,3 @@ export async function runTool(
     return { ok: false, error: msg };
   }
 }
-

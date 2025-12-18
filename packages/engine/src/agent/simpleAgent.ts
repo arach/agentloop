@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { createId, type Message, type ToolCall } from "@agentloop/core";
 import type { ServiceManager } from "../services/ServiceManager.js";
 import { mlxChatCompletion } from "../llm/mlxClient.js";
-import { parseToolCallFromText, runTool, toolSystemPrompt, type ToolCallInput, formatToolResult } from "./tools.js";
+import { parseToolCallFromText, runTool, toolSystemPrompt, type ToolCallInput, formatToolResult, stripToolProtocol } from "./tools.js";
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -43,8 +43,9 @@ export async function runSimpleAgent(options: {
 
     const toolCall = parseToolCallFromText(lastAssistant);
     if (!toolCall) {
-      options.onEvent?.({ type: "assistant.text", content: lastAssistant });
-      return lastAssistant;
+      const cleaned = stripToolProtocol(lastAssistant);
+      options.onEvent?.({ type: "assistant.text", content: cleaned });
+      return cleaned || "…";
     }
 
     const toolId = createId();
@@ -70,4 +71,3 @@ export async function runSimpleAgent(options: {
   // If we somehow kept tool-calling forever, fall back to last assistant text.
   return lastAssistant || "No response.";
 }
-
