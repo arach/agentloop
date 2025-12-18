@@ -16,6 +16,18 @@ export interface ToolCall {
   result?: unknown;
 }
 
+export type ServiceName = "kokomo" | "mlx" | "vlm";
+export type ServiceStatus = "stopped" | "starting" | "running" | "stopping" | "error";
+
+export interface ServiceState {
+  name: ServiceName;
+  status: ServiceStatus;
+  pid?: number;
+  detail?: string;
+  lastExitCode?: number;
+  lastError?: string;
+}
+
 // Session state
 export interface Session {
   id: string;
@@ -46,6 +58,24 @@ export const CommandSchema = z.discriminatedUnion("type", [
       sessionId: z.string(),
     }),
   }),
+  z.object({
+    type: z.literal("service.start"),
+    payload: z.object({
+      name: z.enum(["kokomo", "mlx", "vlm"]),
+    }),
+  }),
+  z.object({
+    type: z.literal("service.stop"),
+    payload: z.object({
+      name: z.enum(["kokomo", "mlx", "vlm"]),
+    }),
+  }),
+  z.object({
+    type: z.literal("service.status"),
+    payload: z.object({
+      name: z.enum(["kokomo", "mlx", "vlm"]).optional(),
+    }),
+  }),
 ]);
 
 export type Command = z.infer<typeof CommandSchema>;
@@ -58,6 +88,8 @@ export type EngineEvent =
   | { type: "assistant.message"; sessionId: string; messageId: string; content: string }
   | { type: "tool.call"; sessionId: string; tool: ToolCall }
   | { type: "tool.result"; sessionId: string; toolId: string; result: unknown }
+  | { type: "service.status"; service: ServiceState }
+  | { type: "service.log"; name: ServiceName; stream: "stdout" | "stderr"; line: string }
   | { type: "error"; sessionId?: string; error: string };
 
 // Client interface for connecting to engine

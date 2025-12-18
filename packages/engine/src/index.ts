@@ -1,16 +1,29 @@
 #!/usr/bin/env bun
 import {
   CommandSchema,
-  DEFAULT_CONFIG,
   createId,
   type Command,
   type EngineEvent,
   type Session,
   type Message,
+  type ServiceName,
 } from "@agentloop/core";
+import { parseEngineCli } from "./cli.js";
+import { ServiceManager } from "./services/ServiceManager.js";
+import { mlxChatCompletion } from "./llm/mlxClient.js";
 
-const HOST = process.env.AGENTLOOP_HOST ?? DEFAULT_CONFIG.engineHost;
-const PORT = Number(process.env.AGENTLOOP_PORT ?? DEFAULT_CONFIG.enginePort);
+const cli = (() => {
+  try {
+    return parseEngineCli(process.argv.slice(2));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(msg);
+    process.exit(1);
+  }
+})();
+
+if (cli.help) process.exit(0);
+if (cli.kokomoLocal) process.env.AGENTLOOP_KOKOMO_LOCAL = "1";
 
 // In-memory session store
 const sessions = new Map<string, Session>();
@@ -27,6 +40,12 @@ function createSession(id: string): Session {
 
 function sendEvent(ws: Bun.ServerWebSocket<unknown>, event: EngineEvent) {
   ws.send(JSON.stringify(event));
+}
+
+const clients = new Set<Bun.ServerWebSocket<unknown>>();
+function broadcastEvent(event: EngineEvent) {
+  const payload = JSON.stringify(event);
+  for (const ws of clients) ws.send(payload);
 }
 
 async function handleSessionCreate(ws: Bun.ServerWebSocket<unknown>, sessionId?: string) {
@@ -63,13 +82,57 @@ async function handleSessionSend(ws: Bun.ServerWebSocket<unknown>, sessionId: st
   session.status = "streaming";
   sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: "Generating response..." });
 
-  // Generate a stubbed response (this is where the real agent logic would go)
-  const responses = [
-    `I understand you said: "${content}"\n\nI'm currently running as a stub agent. In a real implementation, this is where you'd integrate your LLM of choice (Claude, GPT, Llama, etc.) to process messages and generate intelligent responses.\n\nTo integrate a real agent, edit the \`handleSessionSend\` function in \`packages/engine/src/index.ts\`.`,
-    `Thanks for your message! Here's what I heard: "${content}"\n\nThis response is being streamed token by token, just like a real LLM would do. The agent loop architecture supports:\n\n• Streaming responses\n• Tool calls (coming soon)\n• Session management\n• Multiple concurrent sessions`,
-    `Got it! You said: "${content}"\n\nI'm the AgentLoop stub agent, demonstrating the TUI and engine communication. The beautiful interface you're seeing is built with Ink (React for terminals) and communicates with this engine via WebSocket.\n\nPretty cool, right?`,
-  ];
-  const responseText = responses[Math.floor(Math.random() * responses.length)];
+  const useMlx =
+    (process.env.AGENTLOOP_LLM ?? "").toLowerCase() === "mlx" ||
+    (services.getState("mlx").status === "running");
+
+  let responseText = "";
+  if (useMlx) {
+    try {
+      const sys = process.env.AGENTLOOP_SYSTEM_PROMPT?.trim();
+      const recent = session.messages.slice(Math.max(0, session.messages.length - 20));
+      const messagesForLlm = [
+        ...(sys ? [{ role: "system" as const, content: sys }] : []),
+        ...recent
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      ];
+
+      const out = await mlxChatCompletion(messagesForLlm);
+      responseText = out.content;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      responseText = [
+        "Local MLX LLM failed.",
+        "",
+        msg,
+        "",
+        "Fix:",
+        "  bun run mlx:install -- --yes",
+        "  bun run mlx:server",
+        "",
+        "Or from the TUI:",
+        "  /install mlx --yes",
+        "  /service mlx start",
+      ].join("\n");
+    }
+  } else {
+    responseText = [
+      `I understand you said: "${content}"`,
+      "",
+      "This engine is currently running without an LLM.",
+      "",
+      "To use a local MLX model:",
+      "  bun run mlx:install -- --yes",
+      "  bun run mlx:server",
+      "",
+      "Or from the TUI:",
+      "  /install mlx --yes",
+      "  /service mlx start",
+      "",
+      "Tip: set AGENTLOOP_LLM=mlx to always try MLX.",
+    ].join("\n");
+  }
 
   // Stream tokens
   const tokens = responseText.split(/(\s+)/);
@@ -104,6 +167,45 @@ function handleSessionCancel(ws: Bun.ServerWebSocket<unknown>, sessionId: string
   }
 }
 
+const services = new ServiceManager();
+services.on((evt) => {
+  if (evt.type === "status") {
+    broadcastEvent({ type: "service.status", service: evt.service });
+  } else {
+    broadcastEvent({ type: "service.log", name: evt.name, stream: evt.stream, line: evt.line });
+  }
+});
+
+async function handleServiceStart(ws: Bun.ServerWebSocket<unknown>, name: ServiceName) {
+  try {
+    await services.start(name);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendEvent(ws, { type: "error", error: msg });
+  }
+}
+
+async function handleServiceStop(ws: Bun.ServerWebSocket<unknown>, name: ServiceName) {
+  try {
+    await services.stop(name);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendEvent(ws, { type: "error", error: msg });
+  }
+}
+
+function handleServiceStatus(ws: Bun.ServerWebSocket<unknown>, name?: ServiceName) {
+  if (name) {
+    sendEvent(ws, { type: "service.status", service: services.getState(name) });
+  } else {
+    for (const s of services.listStates()) {
+      // Keep the default UI clean: don't spam stopped services unless explicitly requested.
+      if (s.status === "stopped" && !s.lastError) continue;
+      sendEvent(ws, { type: "service.status", service: s });
+    }
+  }
+}
+
 function handleCommand(ws: Bun.ServerWebSocket<unknown>, data: unknown) {
   const parsed = CommandSchema.safeParse(data);
   if (!parsed.success) {
@@ -122,12 +224,27 @@ function handleCommand(ws: Bun.ServerWebSocket<unknown>, data: unknown) {
     case "session.cancel":
       handleSessionCancel(ws, command.payload.sessionId);
       break;
+    case "service.start":
+      void handleServiceStart(ws, command.payload.name);
+      break;
+    case "service.stop":
+      void handleServiceStop(ws, command.payload.name);
+      break;
+    case "service.status":
+      handleServiceStatus(ws, command.payload.name);
+      break;
   }
 }
 
+await services.autoStartIfConfigured().catch((err) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`[engine] Failed to auto-start services: ${msg}`);
+  process.exit(1);
+});
+
 const server = Bun.serve({
-  hostname: HOST,
-  port: PORT,
+  hostname: cli.host,
+  port: cli.port,
   fetch(req, server) {
     // Upgrade to WebSocket
     if (server.upgrade(req)) {
@@ -138,6 +255,8 @@ const server = Bun.serve({
   websocket: {
     open(ws) {
       console.log(`[engine] Client connected`);
+      clients.add(ws);
+      handleServiceStatus(ws);
     },
     message(ws, message) {
       try {
@@ -149,6 +268,7 @@ const server = Bun.serve({
     },
     close(ws) {
       console.log(`[engine] Client disconnected`);
+      clients.delete(ws);
     },
   },
 });
@@ -162,20 +282,21 @@ console.log(`
 ${purple("  ╭───────────────────────────────────────────────╮")}
 ${purple("  │")}       ${cyan("✦")} ${purple("AgentLoop Engine")} ${dim("v0.1.0")}             ${purple("│")}
 ${purple("  ├───────────────────────────────────────────────┤")}
-${purple("  │")}  ${dim("WebSocket:")} ${cyan(`ws://${HOST}:${PORT}`).padEnd(33)}${purple("│")}
+${purple("  │")}  ${dim("WebSocket:")} ${cyan(`ws://${cli.host}:${server.port}`).padEnd(33)}${purple("│")}
 ${purple("  │")}  ${dim("Status:")}    ${green("● Ready")}                          ${purple("│")}
 ${purple("  ╰───────────────────────────────────────────────╯")}
 `);
 
 // Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("\n[engine] Shutting down...");
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[engine] Shutting down (${signal})...`);
+  await services.stop("kokomo").catch(() => {});
   server.stop();
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  console.log("\n[engine] Shutting down...");
-  server.stop();
-  process.exit(0);
-});
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
