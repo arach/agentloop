@@ -1125,7 +1125,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     }
     addSystemMessage(`Copying: ${label}…`);
     const ok = await tryCopyToClipboard(trimmed);
-    addSystemMessage(ok ? "Copied." : "Copy failed (clipboard tool not found).");
+    addSystemMessage(ok ? "Copied." : "Copy failed (clipboard tool not found). On macOS, ensure `pbcopy` is available.");
   };
 
   const copySelection = async () => {
@@ -1184,8 +1184,16 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const startService = (name: ServiceName) => {
     if (!ensureEngineConnected()) return;
     addSystemMessage(`Starting service: ${name}`);
+    // Switch the sidebar to the relevant logs immediately for better feedback.
+    activeLogService = name;
+    // Expand logs section if it was collapsed.
+    logsCollapsed = false;
+    logsServiceTabs.visible = true;
+    logsScroll.visible = true;
     send({ type: "service.start", payload: { name } });
     requestServiceStatus(name);
+    updateSidebar();
+    requestRender();
   };
 
   const stopService = (name: ServiceName) => {
@@ -1193,6 +1201,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     addSystemMessage(`Stopping service: ${name}`);
     send({ type: "service.stop", payload: { name } });
     requestServiceStatus(name);
+    requestRender();
   };
 
   const ensureKokomoRunning = async (): Promise<boolean> => {

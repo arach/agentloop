@@ -5,12 +5,19 @@ export async function tryCopyToClipboard(text: string): Promise<boolean> {
   const platform = process.platform;
   const candidates: { cmd: string[]; input: "stdin" | "arg" }[] =
     platform === "darwin"
-      ? [{ cmd: ["pbcopy"], input: "stdin" }]
+      ? [
+          // Some launch contexts may have a restricted PATH; try absolute paths too.
+          { cmd: ["pbcopy"], input: "stdin" },
+          { cmd: ["/usr/bin/pbcopy"], input: "stdin" },
+        ]
       : platform === "linux"
         ? [
             { cmd: ["wl-copy"], input: "stdin" },
+            { cmd: ["/usr/bin/wl-copy"], input: "stdin" },
             { cmd: ["xclip", "-selection", "clipboard"], input: "stdin" },
+            { cmd: ["/usr/bin/xclip", "-selection", "clipboard"], input: "stdin" },
             { cmd: ["xsel", "--clipboard", "--input"], input: "stdin" },
+            { cmd: ["/usr/bin/xsel", "--clipboard", "--input"], input: "stdin" },
           ]
         : platform === "win32"
           ? [{ cmd: ["clip"], input: "stdin" }]
