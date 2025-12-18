@@ -43,26 +43,34 @@ def _build_prompt(tokenizer, messages: list[dict]) -> str:
 def _generate(model, tokenizer, prompt: str, max_tokens: int, temperature: float, top_p: float) -> str:
     from mlx_lm import generate  # type: ignore
 
-    # mlx-lm has changed argument names across versions (temp vs temperature).
-    # Try the older name first, then fall back.
-    try:
-        return generate(
-            model,
-            tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temp=temperature,
-            top_p=top_p,
-        )
-    except TypeError:
-        return generate(
-            model,
-            tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
+    # mlx-lm has changed argument names across versions, and sometimes forwards kwargs
+    # into lower-level generate_step() with different names. Try a few safe combinations.
+    candidates = [
+        {"max_tokens": max_tokens, "temp": temperature, "top_p": top_p},
+        {"max_tokens": max_tokens, "temperature": temperature, "top_p": top_p},
+        {"max_tokens": max_tokens, "temp": temperature},
+        {"max_tokens": max_tokens, "temperature": temperature},
+        {"max_tokens": max_tokens},
+        {"max_new_tokens": max_tokens, "temp": temperature, "top_p": top_p},
+        {"max_new_tokens": max_tokens, "temperature": temperature, "top_p": top_p},
+        {"max_new_tokens": max_tokens, "temp": temperature},
+        {"max_new_tokens": max_tokens, "temperature": temperature},
+        {"max_new_tokens": max_tokens},
+    ]
+
+    last_err: Exception | None = None
+    for kwargs in candidates:
+        try:
+            return generate(model, tokenizer, prompt=prompt, **kwargs)
+        except TypeError as e:
+            msg = str(e)
+            # Only fall back on signature/kwarg mismatches.
+            if "unexpected keyword argument" in msg or "got an unexpected keyword argument" in msg:
+                last_err = e
+                continue
+            raise
+
+    raise TypeError(f"mlx-lm generate() argument mismatch (tried {len(candidates)} variants)") from last_err
 
 
 class MlxServer(ThreadingHTTPServer):
