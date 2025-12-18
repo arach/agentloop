@@ -1035,7 +1035,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const updateHelp = () => {
     helpBar.content =
-      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · ^Y copy last · ^A about · ^N new · ^R reconnect · ^C quit";
+      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect · ^C quit";
   };
 
   const updateAll = () => {
@@ -1615,7 +1615,28 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return;
     }
 
-    // Quit
+    // Copy selection (conversation/sidebar/composer)
+    if ((key.ctrl || key.meta || key.super) && key.name === "c") {
+      if (renderer.hasSelection) {
+        key.preventDefault();
+        const selected = getSelectionText().trimEnd();
+        if (selected.trim()) {
+          void (async () => {
+            const ok = await tryCopyToClipboard(selected);
+            if (ok) {
+              addSystemMessage(`[copy] copied selection (${selected.length} chars)`);
+              renderer.clearSelection();
+              requestRender();
+            } else {
+              addSystemMessage("[copy] failed (clipboard tool not found)");
+            }
+          })();
+          return;
+        }
+      }
+    }
+
+    // Quit (only when not copying a selection)
     if (key.ctrl && key.name === "c") {
       key.preventDefault();
       destroy();
