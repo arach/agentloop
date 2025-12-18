@@ -106,6 +106,10 @@ Health check:
 curl http://127.0.0.1:12345/health
 ```
 
+Caching:
+
+- Model weights are downloaded once and cached under `.agentloop/` by default (via `HF_HOME` / `HUGGINGFACE_HUB_CACHE`).
+
 ## Local VLM (MLX)
 
 This repo also includes a tiny MLX VLM HTTP server wrapper (OpenAI-ish `/v1/chat/completions`) intended for local vision + text.

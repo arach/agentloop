@@ -13,6 +13,13 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 
+# Keep model caches stable across runs (Hugging Face / XDG).
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$ROOT_DIR/.agentloop/cache}"
+export HF_HOME="${HF_HOME:-$ROOT_DIR/.agentloop/hf}"
+export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$HF_HOME/hub}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+mkdir -p "$XDG_CACHE_HOME" "$HF_HOME" "$HUGGINGFACE_HUB_CACHE" "$TRANSFORMERS_CACHE"
+
 export VLM_HOST="${VLM_HOST:-127.0.0.1}"
 export VLM_PORT="${VLM_PORT:-12346}"
 export VLM_MODEL="${VLM_MODEL:-mlx-community/llava-v1.6-mistral-7b-4bit}"
