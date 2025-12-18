@@ -2,10 +2,16 @@ import {
   ASCIIFontRenderable,
   BoxRenderable,
   ScrollBoxRenderable,
+  StyledText,
   TabSelectRenderable,
   TabSelectRenderableEvents,
   TextRenderable,
   TextareaRenderable,
+  bg,
+  bold,
+  dim,
+  fg,
+  t,
   createCliRenderer,
 } from "@opentui/core";
 import {
@@ -773,6 +779,16 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
   footer.add(inputBox);
 
+  const composerHeader = new TextRenderable(renderer, {
+    id: "composerHeader",
+    height: 1,
+    selectable: false,
+    wrapMode: "none",
+    fg: theme.muted,
+    content: "You",
+  });
+  inputBox.add(composerHeader);
+
   const textarea = new TextareaRenderable(renderer, {
     id: "input",
     flexGrow: 1,
@@ -859,19 +875,60 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const updateConversation = () => {
-    const lines: string[] = [];
-    for (const m of messages) {
-      const who = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : "System";
-      lines.push(`• ${who} • ${formatTime(m.timestamp)}`);
-      lines.push(m.content.trimEnd());
-      lines.push("");
-    }
+    const chunks: any[] = [];
+
+    const push = (st: StyledText) => {
+      chunks.push(...st.chunks);
+    };
+
+    const pushLine = (st: StyledText) => {
+      push(st);
+      push(t`\n`);
+    };
+
+    const tag = (label: string, opts: { fg: string; bg: string }) => bg(opts.bg)(fg(opts.fg)(bold(` ${label} `)));
+
+    const roleStyles = (role: "user" | "assistant" | "system") => {
+      if (role === "user") return { tag: { fg: theme.bg, bg: theme.fg }, body: theme.fg, header: theme.muted };
+      if (role === "assistant") return { tag: { fg: theme.bg, bg: theme.muted }, body: theme.fg, header: theme.muted };
+      return { tag: { fg: theme.bg, bg: theme.dim2 }, body: theme.dim, header: theme.dim2 };
+    };
+
+    const renderMessage = (m: Message) => {
+      const s = roleStyles(m.role);
+      const time = formatTime(m.timestamp);
+      const title =
+        m.role === "user" ? "YOU" : m.role === "assistant" ? "AGENT" : "LOOP";
+
+      pushLine(
+        t`${tag(title, s.tag)} ${fg(s.header)(dim(time))}`
+      );
+
+      const body = m.content.trimEnd();
+      if (!body) {
+        pushLine(t`${fg(s.body)(dim("(empty)"))}`);
+        pushLine(t``);
+        return;
+      }
+
+      for (const line of body.split(/\r?\n/)) {
+        pushLine(t`${fg(s.body)(line)}`);
+      }
+      pushLine(t``);
+    };
+
+    for (const m of messages) renderMessage(m);
+
     if (sessionStatus === "streaming" && streamingContent.trim()) {
-      lines.push(`• Assistant • ${formatTime(Date.now())}`);
-      lines.push(streamingContent.trimEnd());
-      lines.push("");
+      const s = roleStyles("assistant");
+      pushLine(t`${tag("AGENT", s.tag)} ${fg(s.header)(dim(formatTime(Date.now())))} ${fg(theme.dim2)("(streaming)")}`);
+      for (const line of streamingContent.trimEnd().split(/\r?\n/)) {
+        pushLine(t`${fg(s.body)(line)}`);
+      }
+      pushLine(t``);
     }
-    conversationText.content = lines.join("\n").trimEnd();
+
+    conversationText.content = new StyledText(chunks);
   };
 
   const updateInspector = () => {
@@ -971,6 +1028,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     updateInspector();
     updateSidebar();
     updateHelp();
+    composerHeader.content =
+      sessionStatus === "thinking" || sessionStatus === "streaming" || sessionStatus === "tool_use"
+        ? "You (waiting…) "
+        : "You";
   };
 
   updateAll();
