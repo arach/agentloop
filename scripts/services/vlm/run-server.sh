@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 VLM_BASE_DIR="${VLM_BASE_DIR:-$ROOT_DIR/external/mlx-vlm}"
 VENV_DIR="${VLM_VENV_DIR:-$VLM_BASE_DIR/.venv}"

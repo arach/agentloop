@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # Keep caches inside the repo so installs work in sandboxed environments.
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$ROOT_DIR/.agentloop/cache}"
@@ -75,4 +75,3 @@ uv pip install --python "$VENV_DIR/bin/python" --upgrade mlx-vlm pillow
 
 echo "[vlm] done" >&2
 echo "[vlm] run server: bun run vlm:server" >&2
-

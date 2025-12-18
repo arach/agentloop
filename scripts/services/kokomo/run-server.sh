@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 KOKOMO_BASE_DIR="${KOKOMO_BASE_DIR:-$ROOT_DIR/external/kokomo-mlx}"
 VENV_DIR="${KOKOMO_VENV_DIR:-$KOKOMO_BASE_DIR/.venv}"
