@@ -2,16 +2,10 @@ import {
   ASCIIFontRenderable,
   BoxRenderable,
   ScrollBoxRenderable,
-  StyledText,
   TabSelectRenderable,
   TabSelectRenderableEvents,
   TextRenderable,
   TextareaRenderable,
-  bg,
-  bold,
-  dim,
-  fg,
-  t,
   createCliRenderer,
 } from "@opentui/core";
 import {
@@ -27,52 +21,13 @@ import { EngineWsClient } from "./engineWsClient.js";
 import { tryCopyToClipboard } from "./utils/clipboard.js";
 import { installers, runInstaller, type InstallerId } from "./utils/installers.js";
 import { kokomoTtsLocalToWavFile, kokomoTtsToWavFile, tryPlayAudioFile } from "./utils/kokomo.js";
+import { theme } from "./ui/theme.js";
+import { clampLines, extractCodeBlocks, formatTime, maybeExtractPath } from "./ui/text.js";
+import { renderConversation, type ConversationStatus } from "./ui/conversation.js";
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
-const theme = {
-  bg: "#0a0a0a",
-  panelBg: "#0e0e0e",
-  panelBg2: "#101010",
-  border: "#2e2e2e",
-  borderFocused: "#a0a0a0",
-  fg: "#f0f0f0",
-  muted: "#b8b8b8",
-  dim: "#7c7c7c",
-  dim2: "#5c5c5c",
-  selectionBg: "#2a2a2a",
-  selectionFg: "#ffffff",
-};
-
 type Screen = "splash" | "main";
-
-function normalizeNewlines(s: string): string {
-  return s.replace(/\r\n/g, "\n");
-}
-
-function extractCodeBlocks(markdown: string): { lang: string; code: string }[] {
-  const blocks: { lang: string; code: string }[] = [];
-  const re = /```([^\n`]*)\n([\s\S]*?)```/g;
-  for (const m of normalizeNewlines(markdown).matchAll(re)) {
-    blocks.push({ lang: (m[1] ?? "").trim(), code: (m[2] ?? "").trimEnd() });
-  }
-  return blocks;
-}
-
-function maybeExtractPath(text: string): string | null {
-  const m = text.match(/\b\/(?:[^\s]+\/)*[^\s]+\.(?:wav|mp3|m4a)\b/);
-  return m?.[0] ?? null;
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function clampLines(lines: string[], max: number): string[] {
-  if (lines.length <= max) return lines;
-  return lines.slice(lines.length - max);
-}
 
 export async function runTui(options: { engineHost?: string; enginePort?: number }): Promise<void> {
   const engineHost = options.engineHost ?? DEFAULT_CONFIG.engineHost;
@@ -842,7 +797,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   // State
   let connectionStatus: ConnectionStatus = "disconnected";
   let sessionId: string | null = null;
-  let sessionStatus: "idle" | "thinking" | "streaming" | "tool_use" | "error" = "idle";
+  let sessionStatus: ConversationStatus = "idle";
   let error: string | null = null;
   let streamingContent = "";
   let messages: Message[] = [];
@@ -895,82 +850,12 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const updateConversation = () => {
-    const chunks: any[] = [];
-
-    const push = (st: StyledText) => {
-      chunks.push(...st.chunks);
-    };
-
-    const pushLine = (st: StyledText) => {
-      push(st);
-      push(t`\n`);
-    };
-
-    const tag = (label: string, opts: { fg: string; bg: string }) => bg(opts.bg)(fg(opts.fg)(bold(` ${label} `)));
-
-    const roleStyles = (role: "user" | "assistant" | "system") => {
-      if (role === "user") return { tag: { fg: theme.bg, bg: theme.fg }, body: theme.fg, header: theme.muted };
-      if (role === "assistant") return { tag: { fg: theme.bg, bg: theme.muted }, body: theme.fg, header: theme.muted };
-      return { tag: { fg: theme.bg, bg: theme.dim2 }, body: theme.dim, header: theme.dim2 };
-    };
-
-    const isLogLikeSystemMessage = (text: string): boolean => {
-      const first = (text ?? "").trimStart();
-      if (!first) return false;
-      if (first.startsWith("[install:")) return true;
-      if (first.startsWith("[service]")) return true;
-      if (first.startsWith("[tool]")) return true;
-      if (first.startsWith("[say]")) return true;
-      if (first.startsWith("$ ")) return true;
-      if (first.startsWith("! ")) return true;
-      if (first.startsWith("[kokomo]") || first.startsWith("[mlx]") || first.startsWith("[vlm]")) return true;
-      // Generic bracketed log prefix: [something] ...
-      if (/^\[[A-Za-z0-9_.:-]+\]/.test(first)) return true;
-      return false;
-    };
-
-    const renderMessage = (m: Message) => {
-      const s = roleStyles(m.role);
-      const time = formatTime(m.timestamp);
-      const title =
-        m.role === "user" ? "YOU" : m.role === "assistant" ? "AGENT" : "LOOP";
-
-      const body = m.content.trimEnd();
-
-      // For system log output, don't add extra headers/timestamps that break up the log stream.
-      if (m.role === "system" && isLogLikeSystemMessage(body)) {
-        for (const line of (body || "").split(/\r?\n/)) {
-          pushLine(t`${fg(theme.dim2)(line)}`);
-        }
-        return;
-      }
-
-      pushLine(t`${tag(title, s.tag)} ${fg(s.header)(dim(time))}`);
-
-      if (!body) {
-        pushLine(t`${fg(s.body)(dim("(empty)"))}`);
-        pushLine(t``);
-        return;
-      }
-
-      for (const line of body.split(/\r?\n/)) {
-        pushLine(t`${fg(s.body)(line)}`);
-      }
-      pushLine(t``);
-    };
-
-    for (const m of messages) renderMessage(m);
-
-    if (sessionStatus === "streaming" && streamingContent.trim()) {
-      const s = roleStyles("assistant");
-      pushLine(t`${tag("AGENT", s.tag)} ${fg(s.header)(dim(formatTime(Date.now())))} ${fg(theme.dim2)("(streaming)")}`);
-      for (const line of streamingContent.trimEnd().split(/\r?\n/)) {
-        pushLine(t`${fg(s.body)(line)}`);
-      }
-      pushLine(t``);
-    }
-
-    conversationText.content = new StyledText(chunks);
+    conversationText.content = renderConversation({
+      theme,
+      messages,
+      sessionStatus,
+      streamingContent,
+    });
   };
 
   const updateInspector = () => {
