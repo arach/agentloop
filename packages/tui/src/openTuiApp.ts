@@ -98,6 +98,28 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     backgroundColor: theme.bg,
     padding: 0,
     gap: 0,
+    onMouseDragEnd: () => {
+      // Premium UX: drag-to-select automatically copies to clipboard.
+      void (async () => {
+        if (!renderer.hasSelection) return;
+        const selected = getSelectionText().trimEnd();
+        if (!selected.trim()) return;
+        const now = Date.now();
+        if (now - lastAutoCopyAt < 250) return;
+        if (selected === lastAutoCopied) return;
+
+        const ok = await tryCopyToClipboard(selected);
+        if (ok) {
+          lastAutoCopied = selected;
+          lastAutoCopyAt = now;
+          addSystemMessage(`[copy] selection copied (${selected.length} chars)`);
+          renderer.clearSelection();
+          requestRender();
+        } else {
+          addSystemMessage("[copy] failed (clipboard tool not found)");
+        }
+      })();
+    },
   });
   renderer.root.add(root);
 
@@ -838,6 +860,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let servicesTabsSynced = false;
   const inlineLogFollow: Record<string, { until: number; lines: number }> = {};
 
+  // Auto-copy selection state
+  let lastAutoCopyAt = 0;
+  let lastAutoCopied = "";
+
   const engine = new EngineWsClient({ host: engineHost, port: enginePort });
 
   const requestRender = () => renderer.requestRender();
@@ -1035,7 +1061,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const updateHelp = () => {
     helpBar.content =
-      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect · ^C quit";
+      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · drag-select auto-copies · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect · ^C quit";
   };
 
   const updateAll = () => {
