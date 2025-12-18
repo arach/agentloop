@@ -32,6 +32,15 @@ Services are “managed processes” supervised by the engine:
 - Readiness is detected via a `GET /health` HTTP endpoint.
 - Logs are captured and streamed back to the TUI as `service.log` events.
 
+## Agent + tools
+
+When an LLM is available (local MLX), the engine runs a small “agent loop”:
+
+- The engine calls the local LLM (OpenAI-ish `/v1/chat/completions`).
+- The model can request **one tool call at a time** by emitting a `TOOL_CALL:` line.
+- The engine executes a small set of safe tools (read/list repo files, service status, time), emits `tool.call` / `tool.result`, and feeds a `TOOL_RESULT:` line back to the model.
+- After a few tool steps, the engine streams the final assistant message to the TUI.
+
 Service wrapper scripts live under `scripts/services/<name>/` and install into:
 
 - `external/kokomo-mlx/` (TTS)
@@ -49,4 +58,4 @@ All local installs and caches are ignored by git:
 - New engine command/event types: `packages/core/src/index.ts`
 - New service: `packages/engine/src/services/ServiceManager.ts` + `scripts/services/<name>/`
 - New installer: `packages/tui/src/utils/installers.ts`
-
+- New tools/agent behavior: `packages/engine/src/agent/`

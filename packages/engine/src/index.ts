@@ -10,7 +10,7 @@ import {
 } from "@agentloop/core";
 import { parseEngineCli } from "./cli.js";
 import { ServiceManager } from "./services/ServiceManager.js";
-import { mlxChatCompletion } from "./llm/mlxClient.js";
+import { runSimpleAgent } from "./agent/simpleAgent.js";
 
 const cli = (() => {
   try {
@@ -89,17 +89,31 @@ async function handleSessionSend(ws: Bun.ServerWebSocket<unknown>, sessionId: st
   let responseText = "";
   if (useMlx) {
     try {
-      const sys = process.env.AGENTLOOP_SYSTEM_PROMPT?.trim();
-      const recent = session.messages.slice(Math.max(0, session.messages.length - 20));
-      const messagesForLlm = [
-        ...(sys ? [{ role: "system" as const, content: sys }] : []),
-        ...recent
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-      ];
+      session.status = "tool_use";
+      sendEvent(ws, { type: "session.status", sessionId, status: "tool_use", detail: "Agent + tools..." });
 
-      const out = await mlxChatCompletion(messagesForLlm);
-      responseText = out.content;
+      const sys = process.env.AGENTLOOP_SYSTEM_PROMPT?.trim();
+      responseText = await runSimpleAgent({
+        sessionMessages: session.messages,
+        services,
+        systemPrompt: sys,
+        onEvent: (evt) => {
+          if (evt.type === "tool.call") {
+            session.toolCalls.push(evt.tool);
+            sendEvent(ws, { type: "tool.call", sessionId, tool: evt.tool });
+          } else if (evt.type === "tool.result") {
+            const t = session.toolCalls.find((x) => x.id === evt.toolId);
+            if (t) {
+              t.status = (evt.result as any)?.ok ? "completed" : "failed";
+              t.result = evt.result;
+            }
+            sendEvent(ws, { type: "tool.result", sessionId, toolId: evt.toolId, result: evt.result });
+          }
+        },
+      });
+
+      session.status = "streaming";
+      sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: "Generating response..." });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       responseText = [

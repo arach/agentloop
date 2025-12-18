@@ -1635,6 +1635,12 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         addMessage({ id: event.messageId, role: "assistant", content: event.content, timestamp: Date.now() });
         streamingContent = "";
         break;
+      case "tool.call":
+        addSystemMessage(`[tool] call: ${event.tool.name} (${event.tool.id})`);
+        break;
+      case "tool.result":
+        addSystemMessage(`[tool] result: ${event.toolId}`);
+        break;
       case "service.status":
         services = { ...services, [event.service.name]: event.service };
         {
