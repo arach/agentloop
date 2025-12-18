@@ -43,14 +43,26 @@ def _build_prompt(tokenizer, messages: list[dict]) -> str:
 def _generate(model, tokenizer, prompt: str, max_tokens: int, temperature: float, top_p: float) -> str:
     from mlx_lm import generate  # type: ignore
 
-    return generate(
-        model,
-        tokenizer,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        temp=temperature,
-        top_p=top_p,
-    )
+    # mlx-lm has changed argument names across versions (temp vs temperature).
+    # Try the older name first, then fall back.
+    try:
+        return generate(
+            model,
+            tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temp=temperature,
+            top_p=top_p,
+        )
+    except TypeError:
+        return generate(
+            model,
+            tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
 
 
 class MlxServer(ThreadingHTTPServer):
@@ -167,4 +179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

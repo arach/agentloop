@@ -31,14 +31,15 @@ import { kokomoTtsLocalToWavFile, kokomoTtsToWavFile, tryPlayAudioFile } from ".
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
 const theme = {
-  bg: "#0b0b0b",
-  panelBg: "#0f0f0f",
-  border: "#3a3a3a",
-  borderFocused: "#8a8a8a",
-  fg: "#eaeaea",
-  muted: "#a8a8a8",
-  dim: "#7a7a7a",
-  dim2: "#5a5a5a",
+  bg: "#0a0a0a",
+  panelBg: "#0e0e0e",
+  panelBg2: "#101010",
+  border: "#2e2e2e",
+  borderFocused: "#a0a0a0",
+  fg: "#f0f0f0",
+  muted: "#b8b8b8",
+  dim: "#7c7c7c",
+  dim2: "#5c5c5c",
   selectionBg: "#2a2a2a",
   selectionFg: "#ffffff",
 };
@@ -95,8 +96,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     height: "100%",
     flexDirection: "column",
     backgroundColor: theme.bg,
-    padding: 1,
-    gap: 1,
+    padding: 0,
+    gap: 0,
   });
   renderer.root.add(root);
 
@@ -163,10 +164,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const aboutOverlay = new BoxRenderable(renderer, {
     id: "aboutOverlay",
     position: "absolute",
-    top: "10%",
-    left: "10%",
-    width: "80%",
-    height: "80%",
+    top: "8%",
+    left: "8%",
+    width: "84%",
+    height: "84%",
     zIndex: 100,
     border: true,
     borderColor: theme.borderFocused,
@@ -279,7 +280,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     minWidth: 28,
     border: true,
     borderColor: theme.border,
-    backgroundColor: theme.panelBg,
+    backgroundColor: theme.panelBg2,
     padding: 1,
     flexDirection: "column",
     gap: 1,
@@ -337,8 +338,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     borderColor: theme.border,
     focusedBorderColor: theme.borderFocused,
     backgroundColor: theme.panelBg,
-    paddingLeft: 1,
-    paddingRight: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
     justifyContent: "center",
   });
   const headerText = new TextRenderable(renderer, {
@@ -357,7 +358,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     width: "100%",
     flexGrow: 1,
     flexDirection: "row",
-    gap: 1,
+    gap: 0,
   });
   root.add(mainRow);
 
@@ -370,19 +371,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     backgroundColor: theme.panelBg,
     padding: 1,
     flexDirection: "column",
+    title: "Conversation",
+    titleAlignment: "left",
     onMouseDown: () => renderer.focusRenderable(conversationScroll),
   });
   mainRow.add(conversationPanel);
-
-  const conversationTitle = new TextRenderable(renderer, {
-    id: "conversationTitle",
-    content: "Conversation",
-    fg: theme.muted,
-    wrapMode: "none",
-    selectable: false,
-    height: 1,
-  });
-  conversationPanel.add(conversationTitle);
 
   const conversationScroll = new ScrollBoxRenderable(renderer, {
     id: "conversationScroll",
@@ -409,9 +402,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const sidebar = new BoxRenderable(renderer, {
     id: "sidebar",
-    width: "28%",
-    minWidth: 26,
-    maxWidth: 48,
+    width: 44,
+    minWidth: 36,
+    maxWidth: 56,
     border: true,
     borderColor: theme.border,
     focusedBorderColor: theme.borderFocused,
@@ -461,7 +454,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     textColor: theme.dim2,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.bg,
+    selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
     options: [
       { name: "kokomo", description: "Kokomo TTS", value: "kokomo" },
@@ -492,7 +485,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     textColor: theme.dim,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.bg,
+    selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
     options: [
       { name: "start", description: "Start service", value: "start" },
@@ -508,7 +501,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     scrollY: true,
     stickyScroll: false,
     viewportCulling: true,
-    scrollbarOptions: { showArrows: false, trackOptions: { foregroundColor: theme.border, backgroundColor: theme.panelBg } },
+    scrollbarOptions: { showArrows: false, trackOptions: { foregroundColor: theme.borderFocused, backgroundColor: theme.panelBg } },
     contentOptions: { flexDirection: "column" },
   });
   sidebar.add(sidebarScroll);
@@ -559,7 +552,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     textColor: theme.dim2,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.bg,
+    selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
     options: [{ name: "kokomo", description: "kokomo logs", value: "kokomo" }],
   });
@@ -657,7 +650,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     textColor: theme.dim2,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.bg,
+    selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
     options: [
       { name: "copy last", description: "Copy last assistant", value: "copy_last" },
@@ -704,7 +697,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     textColor: theme.dim2,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.bg,
+    selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
     options: [
       { name: "/help", description: "Show help", value: "/help" },
@@ -762,7 +755,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     width: "100%",
     height: 6,
     flexDirection: "column",
-    gap: 1,
+    gap: 0,
   });
   root.add(footer);
 
@@ -843,6 +836,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let activeLogService: string = "kokomo";
   let lastLogTabsKey = "";
   let servicesTabsSynced = false;
+  const inlineLogFollow: Record<string, { until: number; lines: number }> = {};
 
   const engine = new EngineWsClient({ host: engineHost, port: enginePort });
 
@@ -1273,6 +1267,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     logsCollapsed = false;
     logsServiceTabs.visible = true;
     logsScroll.visible = true;
+    // Also echo a short burst of logs into the conversation so startup progress is visible even if the sidebar is narrow.
+    inlineLogFollow[name] = { until: Date.now() + 10_000, lines: 0 };
     send({ type: "service.start", payload: { name } });
     requestServiceStatus(name);
     updateSidebar();
@@ -1750,6 +1746,16 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
           const existing = serviceLogs[event.name] ?? [];
           const next = [...existing, line];
           serviceLogs = { ...serviceLogs, [event.name]: clampLines(next, 400) };
+
+          const follow = inlineLogFollow[event.name];
+          if (follow && Date.now() < follow.until && follow.lines < 40) {
+            follow.lines += 1;
+            // Render as log-like system lines (no timestamps/headers) to avoid interrupting output.
+            addSystemMessage(`[${event.name}] ${line}`);
+            if (follow.lines >= 40) {
+              addSystemMessage(`[${event.name}] (log preview truncated — see sidebar)`);
+            }
+          }
         }
         break;
       case "error":
