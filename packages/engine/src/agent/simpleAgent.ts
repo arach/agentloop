@@ -3,7 +3,15 @@ import { fileURLToPath } from "node:url";
 import { createId, type Message, type ToolCall } from "@agentloop/core";
 import type { ServiceManager } from "../services/ServiceManager.js";
 import { mlxChatCompletion } from "../llm/mlxClient.js";
-import { parseToolCallFromText, runTool, toolSystemPrompt, type ToolCallInput, formatToolResult, stripToolProtocol } from "./tools.js";
+import {
+  formatToolResult,
+  parseToolCallFromText,
+  runTool,
+  stripToolProtocol,
+  toolSystemPrompt,
+  type ToolCallInput,
+  type ToolName,
+} from "./tools.js";
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -19,6 +27,7 @@ export async function runSimpleAgent(options: {
   services: ServiceManager;
   maxToolCalls?: number;
   systemPrompt?: string;
+  allowedTools?: ToolName[];
   onEvent?: (evt: AgentStepEvent) => void;
 }): Promise<string> {
   const root = repoRoot();
@@ -27,7 +36,7 @@ export async function runSimpleAgent(options: {
 
   const baseMessages = [
     ...(sys ? [{ role: "system" as const, content: sys }] : []),
-    { role: "system" as const, content: toolSystemPrompt(root) },
+    { role: "system" as const, content: toolSystemPrompt(root, options.allowedTools) },
     ...options.sessionMessages
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-20)
@@ -57,7 +66,7 @@ export async function runSimpleAgent(options: {
     };
     options.onEvent?.({ type: "tool.call", tool });
 
-    const result = await runTool(root, options.services, toolCall as ToolCallInput);
+    const result = await runTool(root, options.services, toolCall as ToolCallInput, { allowedTools: options.allowedTools });
     options.onEvent?.({ type: "tool.result", toolId, result });
 
     // Feed the result back in as a system message.
@@ -69,5 +78,5 @@ export async function runSimpleAgent(options: {
   }
 
   // If we somehow kept tool-calling forever, fall back to last assistant text.
-  return lastAssistant || "No response.";
+  return stripToolProtocol(lastAssistant) || "No response.";
 }

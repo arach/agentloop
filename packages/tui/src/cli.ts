@@ -17,6 +17,7 @@ function printHelp(): void {
     "",
     "Usage:",
     "  bun run tui -- [--host 127.0.0.1] [--port 7777]",
+    "  agentloop [--host 127.0.0.1] [--port 7777]",
     "",
     "Options:",
     "  --host <host>        Engine host (default: AGENTLOOP_HOST or 127.0.0.1)",
@@ -65,4 +66,3 @@ export function parseTuiCli(argv: string[]): TuiCli {
   if (help) printHelp();
   return { host, port, help };
 }
-

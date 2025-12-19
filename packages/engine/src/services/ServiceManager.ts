@@ -116,7 +116,8 @@ function mlxConfigFromEnv(): MlxConfig {
     cmd,
     healthUrl: process.env.MLX_HEALTH_URL ?? (cmd.length > 0 ? `http://${host}:${port}/health` : undefined),
     readyTimeoutMs: envNumber("MLX_READY_TIMEOUT_MS", 30_000),
-    autoStart: envBool("AGENTLOOP_MANAGE_MLX", false),
+    // Dev-friendly default: if the built-in wrapper exists, manage it automatically.
+    autoStart: envBool("AGENTLOOP_MANAGE_MLX", canUseWrapper),
   };
 }
 
@@ -167,6 +168,20 @@ async function waitForHealthy(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`Health check failed (${url}): ${lastErr || "timeout"}`);
 }
 
+async function isHealthy(url: string, timeoutMs = 250): Promise<boolean> {
+  if (!url) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { method: "GET", signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export class ServiceManager {
   #listeners = new Set<Listener>();
 
@@ -208,70 +223,93 @@ export class ServiceManager {
     return [this.#kokomoState, this.#mlxState, this.#vlmState];
   }
 
+  canStart(name: ServiceName): boolean {
+    if (name === "kokomo") return kokomoConfigFromEnv().cmd.length > 0;
+    if (name === "mlx") return mlxConfigFromEnv().cmd.length > 0;
+    if (name === "vlm") return vlmConfigFromEnv().cmd.length > 0;
+    return false;
+  }
+
+  async isServiceHealthy(name: ServiceName, timeoutMs = 250): Promise<boolean> {
+    if (name === "kokomo") {
+      this.#kokomoCfg = kokomoConfigFromEnv();
+      return this.#kokomoCfg.healthUrl ? isHealthy(this.#kokomoCfg.healthUrl, timeoutMs) : false;
+    }
+    if (name === "mlx") {
+      this.#mlxCfg = mlxConfigFromEnv();
+      return this.#mlxCfg.healthUrl ? isHealthy(this.#mlxCfg.healthUrl, timeoutMs) : false;
+    }
+    if (name === "vlm") {
+      this.#vlmCfg = vlmConfigFromEnv();
+      return this.#vlmCfg.healthUrl ? isHealthy(this.#vlmCfg.healthUrl, timeoutMs) : false;
+    }
+    return false;
+  }
+
   async start(name: ServiceName): Promise<void> {
     if (name === "kokomo") {
-    // Re-read env/config at start time so users can set env vars without restarting the engine.
-    this.#kokomoCfg = kokomoConfigFromEnv();
-    const current = this.#kokomoState.status;
-    if (current === "running" || current === "starting") return;
+      // Re-read env/config at start time so users can set env vars without restarting the engine.
+      this.#kokomoCfg = kokomoConfigFromEnv();
+      const current = this.#kokomoState.status;
+      if (current === "running" || current === "starting") return;
 
-    if (this.#kokomoCfg.cmd.length === 0) {
-      throw new Error(
-        [
-          "Kokomo is not configured/installed.",
-          "",
-          "If you want the built-in local MLX wrapper:",
-          "  1) bun run kokomo:install -- --yes",
-          "  2) then in the TUI: /service kokomo start",
-          "",
-          "Or provide your own command:",
-          "  - set KOKOMO_CMD or KOKOMO_CMD_JSON",
-        ].join("\n")
-      );
-    }
-
-    this.#kokomoState = { ...this.#kokomoState, status: "starting", detail: "Starting..." };
-    this.#emit({ type: "status", service: this.#kokomoState });
-
-    const proc = new ManagedProcess("kokomo", this.#kokomoCfg.cmd, {
-      inheritStdio: false,
-      onLine: (stream, line) => this.#emit({ type: "log", name: "kokomo", stream, line }),
-      onExit: (code) => {
-        const wasStopping = this.#kokomoState.status === "stopping";
-        this.#kokomoProc = null;
-        this.#kokomoState = {
-          ...this.#kokomoState,
-          status: "stopped",
-          pid: undefined,
-          detail: wasStopping ? "Stopped" : "Exited",
-          lastExitCode: code,
-          lastError: wasStopping ? undefined : `Exited with code ${code}`,
-        };
-        this.#emit({ type: "status", service: this.#kokomoState });
-      },
-    });
-
-    this.#kokomoProc = proc;
-    proc.start();
-    this.#kokomoState = { ...this.#kokomoState, pid: proc.pid ?? undefined };
-    this.#emit({ type: "status", service: this.#kokomoState });
-
-    try {
-      if (this.#kokomoCfg.healthUrl) {
-        this.#kokomoState = { ...this.#kokomoState, detail: "Waiting for readiness..." };
-        this.#emit({ type: "status", service: this.#kokomoState });
-        await waitForHealthy(this.#kokomoCfg.healthUrl, this.#kokomoCfg.readyTimeoutMs);
+      if (this.#kokomoCfg.cmd.length === 0) {
+        throw new Error(
+          [
+            "Kokomo is not configured/installed.",
+            "",
+            "If you want the built-in local MLX wrapper:",
+            "  1) bun run kokomo:install -- --yes",
+            "  2) then in the TUI: /service kokomo start",
+            "",
+            "Or provide your own command:",
+            "  - set KOKOMO_CMD or KOKOMO_CMD_JSON",
+          ].join("\n")
+        );
       }
-      this.#kokomoState = { ...this.#kokomoState, status: "running", detail: "Running", lastError: undefined };
+
+      this.#kokomoState = { ...this.#kokomoState, status: "starting", detail: "Starting..." };
       this.#emit({ type: "status", service: this.#kokomoState });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.#kokomoState = { ...this.#kokomoState, status: "error", detail: "Failed to start", lastError: msg };
+
+      const proc = new ManagedProcess("kokomo", this.#kokomoCfg.cmd, {
+        inheritStdio: false,
+        onLine: (stream, line) => this.#emit({ type: "log", name: "kokomo", stream, line }),
+        onExit: (code) => {
+          const wasStopping = this.#kokomoState.status === "stopping";
+          this.#kokomoProc = null;
+          this.#kokomoState = {
+            ...this.#kokomoState,
+            status: "stopped",
+            pid: undefined,
+            detail: wasStopping ? "Stopped" : "Exited",
+            lastExitCode: code,
+            lastError: wasStopping ? undefined : `Exited with code ${code}`,
+          };
+          this.#emit({ type: "status", service: this.#kokomoState });
+        },
+      });
+
+      this.#kokomoProc = proc;
+      proc.start();
+      this.#kokomoState = { ...this.#kokomoState, pid: proc.pid ?? undefined };
       this.#emit({ type: "status", service: this.#kokomoState });
-      await this.stop("kokomo");
-      throw err;
-    }
-    return;
+
+      try {
+        if (this.#kokomoCfg.healthUrl) {
+          this.#kokomoState = { ...this.#kokomoState, detail: "Waiting for readiness..." };
+          this.#emit({ type: "status", service: this.#kokomoState });
+          await waitForHealthy(this.#kokomoCfg.healthUrl, this.#kokomoCfg.readyTimeoutMs);
+        }
+        this.#kokomoState = { ...this.#kokomoState, status: "running", detail: "Running", lastError: undefined };
+        this.#emit({ type: "status", service: this.#kokomoState });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.#kokomoState = { ...this.#kokomoState, status: "error", detail: "Failed to start", lastError: msg };
+        this.#emit({ type: "status", service: this.#kokomoState });
+        await this.stop("kokomo");
+        throw err;
+      }
+      return;
     }
 
     if (name === "mlx") {
@@ -292,6 +330,14 @@ export class ServiceManager {
             "  - set MLX_CMD or MLX_CMD_JSON",
           ].join("\n")
         );
+      }
+
+      // If MLX is already serving on the configured URL/port, treat it as running
+      // rather than failing with an "address already in use" spawn.
+      if (this.#mlxCfg.healthUrl && (await isHealthy(this.#mlxCfg.healthUrl, 300))) {
+        this.#mlxState = { ...this.#mlxState, status: "running", detail: "Running (external)", pid: undefined, lastError: undefined };
+        this.#emit({ type: "status", service: this.#mlxState });
+        return;
       }
 
       this.#mlxState = { ...this.#mlxState, status: "starting", detail: "Starting..." };
@@ -329,6 +375,12 @@ export class ServiceManager {
         this.#mlxState = { ...this.#mlxState, status: "running", detail: "Running", lastError: undefined };
         this.#emit({ type: "status", service: this.#mlxState });
       } catch (err) {
+        // If start failed but the port is already serving, assume another process owns it.
+        if (this.#mlxCfg.healthUrl && (await isHealthy(this.#mlxCfg.healthUrl, 300))) {
+          this.#mlxState = { ...this.#mlxState, status: "running", detail: "Running (external)", pid: undefined, lastError: undefined };
+          this.#emit({ type: "status", service: this.#mlxState });
+          return;
+        }
         const msg = err instanceof Error ? err.message : String(err);
         this.#mlxState = { ...this.#mlxState, status: "error", detail: "Failed to start", lastError: msg };
         this.#emit({ type: "status", service: this.#mlxState });
@@ -473,6 +525,10 @@ export class ServiceManager {
   }
 
   async autoStartIfConfigured(): Promise<void> {
+    // Re-read env/config at auto-start time so post-install defaults apply without restart.
+    this.#kokomoCfg = kokomoConfigFromEnv();
+    this.#mlxCfg = mlxConfigFromEnv();
+    this.#vlmCfg = vlmConfigFromEnv();
     if (this.#kokomoCfg.autoStart) {
       await this.start("kokomo");
     }

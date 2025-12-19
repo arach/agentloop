@@ -35,6 +35,10 @@ export interface Session {
   messages: Message[];
   toolCalls: ToolCall[];
   createdAt: number;
+  // Operator config (per-session)
+  agent?: string;
+  routingMode?: "auto" | "pinned";
+  sessionPrompt?: string;
 }
 
 // Protocol schemas
@@ -53,10 +57,23 @@ export const CommandSchema = z.discriminatedUnion("type", [
     }),
   }),
   z.object({
+    type: z.literal("session.configure"),
+    payload: z.object({
+      sessionId: z.string(),
+      routingMode: z.enum(["auto", "pinned"]).optional(),
+      agent: z.string().nullable().optional(),
+      sessionPrompt: z.string().nullable().optional(),
+    }),
+  }),
+  z.object({
     type: z.literal("session.cancel"),
     payload: z.object({
       sessionId: z.string(),
     }),
+  }),
+  z.object({
+    type: z.literal("agent.list"),
+    payload: z.object({}).optional(),
   }),
   z.object({
     type: z.literal("service.start"),
@@ -84,6 +101,16 @@ export type Command = z.infer<typeof CommandSchema>;
 export type EngineEvent =
   | { type: "session.created"; sessionId: string }
   | { type: "session.status"; sessionId: string; status: Session["status"]; detail?: string }
+  | { type: "agent.list"; agents: { name: string; description?: string; tools: string[] }[] }
+  | {
+      type: "router.decision";
+      sessionId: string;
+      routingMode: "auto" | "pinned";
+      agent: string;
+      toolsAllowed: string[];
+      reason?: string;
+      durationMs?: number;
+    }
   | { type: "assistant.token"; sessionId: string; token: string }
   | { type: "assistant.message"; sessionId: string; messageId: string; content: string }
   | { type: "tool.call"; sessionId: string; tool: ToolCall }

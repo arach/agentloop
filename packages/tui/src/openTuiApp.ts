@@ -8,6 +8,7 @@ import {
   TextareaRenderable,
   createCliRenderer,
 } from "@opentui/core";
+import path from "node:path";
 import {
   DEFAULT_CONFIG,
   createId,
@@ -19,19 +20,36 @@ import {
 } from "@agentloop/core";
 import { EngineWsClient } from "./engineWsClient.js";
 import { tryCopyToClipboard } from "./utils/clipboard.js";
-import { installers, runInstaller, type InstallerId } from "./utils/installers.js";
+import {
+  ensureRunDir,
+  isLocalHost,
+  isPidAlive,
+  readEngineStateFile,
+  resolveEnginePaths,
+  spawnManagedEngine,
+  stopManagedEngine,
+  waitForEngineStateFile,
+} from "./utils/engineManager.js";
+import { runGit } from "./utils/git.js";
+import { formatCmd, installers, runInstaller, type InstallerId } from "./utils/installers.js";
 import { kokomoTtsLocalToWavFile, kokomoTtsToWavFile, tryPlayAudioFile } from "./utils/kokomo.js";
+import { fetchLogoToCache } from "./utils/logos.js";
+import { createLogger } from "./utils/logger.js";
 import { theme } from "./ui/theme.js";
 import { clampLines, extractCodeBlocks, formatTime, maybeExtractPath } from "./ui/text.js";
 import { renderConversation, type ConversationStatus } from "./ui/conversation.js";
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+const versionTag = process.env.AGENTLOOP_VERSION ?? "dev";
 
 type Screen = "splash" | "main";
 
 export async function runTui(options: { engineHost?: string; enginePort?: number }): Promise<void> {
-  const engineHost = options.engineHost ?? DEFAULT_CONFIG.engineHost;
-  const enginePort = options.enginePort ?? DEFAULT_CONFIG.enginePort;
+  let engineHost = options.engineHost ?? DEFAULT_CONFIG.engineHost;
+  let enginePort = options.enginePort ?? DEFAULT_CONFIG.enginePort;
+  const enginePaths = resolveEnginePaths();
+  void ensureRunDir(enginePaths.runDir).catch(() => {});
+  const log = createLogger({ repoRoot: enginePaths.repoRoot, alsoConsole: true });
 
   let screen: Screen = "splash";
   let aboutOpen = false;
@@ -54,7 +72,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     padding: 0,
     gap: 0,
     onMouseDragEnd: () => {
-      // Premium UX: drag-to-select automatically copies to clipboard.
+      if (process.env.AGENTLOOP_AUTOCOPY_SELECTION !== "1") return;
       void (async () => {
         if (!renderer.hasSelection) return;
         const selected = getSelectionText().trimEnd();
@@ -68,7 +86,6 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
           lastAutoCopied = selected;
           lastAutoCopyAt = now;
           addSystemMessage(`[copy] selection copied (${selected.length} chars)`);
-          renderer.clearSelection();
           requestRender();
         } else {
           addSystemMessage("[copy] failed (clipboard tool not found)");
@@ -291,7 +308,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       "^N          new session",
       "^R          reconnect",
       "^A          about",
-      "^C          quit",
+      "^C          quit (press twice)",
     ].join("\n"),
   });
   shortcutsPanel.add(shortcutsText);
@@ -310,6 +327,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const header = new BoxRenderable(renderer, {
     id: "header",
     width: "100%",
+    // Border consumes 2 rows; keep this at 3 so we always have 1 content row.
     height: 3,
     border: true,
     borderColor: theme.border,
@@ -317,16 +335,27 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     backgroundColor: theme.panelBg,
     paddingLeft: 2,
     paddingRight: 2,
-    justifyContent: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   });
-  const headerText = new TextRenderable(renderer, {
-    id: "headerText",
+  const headerLeft = new TextRenderable(renderer, {
+    id: "headerLeft",
     fg: theme.fg,
     wrapMode: "none",
     selectable: false,
     flexGrow: 1,
+    height: 1,
   });
-  header.add(headerText);
+  const headerRight = new TextRenderable(renderer, {
+    id: "headerRight",
+    fg: theme.fg,
+    wrapMode: "none",
+    selectable: false,
+    height: 1,
+  });
+  header.add(headerLeft);
+  header.add(headerRight);
   root.add(header);
 
   // Main row (conversation + sidebar)
@@ -402,20 +431,13 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
   sidebar.add(servicesSection);
 
-  let servicesCollapsed = false;
   const servicesTitle = new TextRenderable(renderer, {
     id: "servicesTitle",
-    content: "Services (click to toggle)",
+    content: "Services",
     fg: theme.muted,
     wrapMode: "none",
     selectable: false,
     height: 1,
-    onMouseDown: () => {
-      servicesCollapsed = !servicesCollapsed;
-      servicesText.visible = !servicesCollapsed;
-      serviceActions.visible = !servicesCollapsed;
-      requestRender();
-    },
   });
   servicesSection.add(servicesTitle);
 
@@ -441,28 +463,38 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
   servicesSection.add(serviceTabs);
 
+  const servicesMeta = new TextRenderable(renderer, {
+    id: "servicesMeta",
+    fg: theme.dim,
+    wrapMode: "none",
+    selectable: false,
+    height: 1,
+  });
+  servicesSection.add(servicesMeta);
+
   const servicesText = new TextRenderable(renderer, {
     id: "servicesText",
     fg: theme.fg,
     selectable: true,
-    wrapMode: "word",
+    wrapMode: "none",
     selectionBg: theme.selectionBg,
     selectionFg: theme.selectionFg,
+    height: 9,
   });
   servicesSection.add(servicesText);
 
   const serviceActions = new TabSelectRenderable(renderer, {
     id: "serviceActions",
-    height: 3,
-    tabWidth: 10,
+    height: 1,
+    tabWidth: 8,
     showDescription: false,
-    showUnderline: true,
+    showUnderline: false,
     wrapSelection: true,
     backgroundColor: theme.panelBg,
-    textColor: theme.dim,
+    textColor: theme.dim2,
     focusedBackgroundColor: theme.panelBg,
     focusedTextColor: theme.fg,
-    selectedBackgroundColor: theme.panelBg2,
+    selectedBackgroundColor: theme.panelBg,
     selectedTextColor: theme.fg,
     options: [
       { name: "start", description: "Start service", value: "start" },
@@ -733,6 +765,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     height: 6,
     flexDirection: "column",
     gap: 0,
+    onMouseDown: () => {
+      renderer.focusRenderable(textarea);
+      textarea.focus();
+      renderer.requestRender();
+    },
   });
   root.add(footer);
 
@@ -745,7 +782,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     backgroundColor: theme.panelBg,
     padding: 1,
     flexDirection: "column",
-    onMouseDown: () => renderer.focusRenderable(textarea),
+    onMouseDown: () => {
+      renderer.focusRenderable(textarea);
+      textarea.focus();
+      renderer.requestRender();
+    },
   });
   footer.add(inputBox);
 
@@ -756,6 +797,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     wrapMode: "none",
     fg: theme.muted,
     content: "You",
+    onMouseDown: () => {
+      renderer.focusRenderable(textarea);
+      textarea.focus();
+      renderer.requestRender();
+    },
   });
   inputBox.add(composerHeader);
 
@@ -770,6 +816,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     selectionBg: theme.selectionBg,
     selectionFg: theme.selectionFg,
     placeholder: "Message (/help for commands)…",
+    onMouseDown: () => {
+      renderer.focusRenderable(textarea);
+      textarea.focus();
+      renderer.requestRender();
+    },
     keyBindings: [
       { name: "return", action: "submit" },
       { name: "linefeed", action: "submit" },
@@ -796,7 +847,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   // State
   let connectionStatus: ConnectionStatus = "disconnected";
-  let sessionId: string | null = null;
+  let sessionId: string = createId();
   let sessionStatus: ConversationStatus = "idle";
   let error: string | null = null;
   let streamingContent = "";
@@ -804,6 +855,14 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let services: Record<string, ServiceState> = {};
   let serviceLogs: Record<string, string[]> = {};
   let lastServiceStatusLineByName: Record<string, string> = {};
+  let pendingPerf:
+    | {
+        startedAt: number;
+        contentLength: number;
+        firstTokenAt?: number;
+        tokens: number;
+      }
+    | null = null;
 
   // Command history
   const history: string[] = [];
@@ -813,22 +872,53 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let activeLogService: string = "kokomo";
   let lastLogTabsKey = "";
   let servicesTabsSynced = false;
-  const inlineLogFollow: Record<string, { until: number; lines: number }> = {};
+  let serviceSelectionAnnounceEnabled = false;
+  const recentServiceFeed: string[] = [];
+  let lastInstallCheckAt = 0;
+  let installState: Record<ServiceName, boolean> = { kokomo: false, mlx: false, vlm: false };
+  let autoStartedMlx = false;
+  let routingMode: "auto" | "pinned" = "auto";
+  let activeAgentName: string | null = null;
+  let lastRouterReason: string | null = null;
+  let lastRouterMs: number | null = null;
+  let pendingAgentList = false;
+  let lastAgentList: { name: string; description?: string; tools: string[] }[] = [];
+  let sessionPromptOverride: string | null = null;
+  let toast: string | null = null;
+  let toastUntil = 0;
 
   // Auto-copy selection state
   let lastAutoCopyAt = 0;
   let lastAutoCopied = "";
+  let welcomeShown = false;
+  let quitArmedAt = 0;
 
   const engine = new EngineWsClient({ host: engineHost, port: enginePort });
+  let managedEngineProc: ReturnType<typeof spawnManagedEngine> | null = null;
+
+  const setEngineTarget = (host: string, port: number) => {
+    engineHost = host;
+    enginePort = port;
+    engine.setTarget({ host, port });
+  };
+
+  log.info(`AgentLoop starting (version ${versionTag}) target ws://${engineHost}:${enginePort}`);
 
   const requestRender = () => renderer.requestRender();
+
+  const setToast = (message: string, ms = 2500) => {
+    toast = message;
+    toastUntil = Date.now() + ms;
+    requestRender();
+  };
 
   const addMessage = (m: Message) => {
     messages = [...messages, m];
     requestRender();
   };
 
-  const addSystemMessage = (content: string) => {
+  const addSystemMessage = (content: string, opts?: { silent?: boolean }) => {
+    if (opts?.silent) return;
     addMessage({ id: createId(), role: "system", content, timestamp: Date.now() });
   };
 
@@ -837,16 +927,17 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const updateHeader = () => {
     const conn =
       connectionStatus === "connected"
-        ? "● connected"
+        ? "connected"
         : connectionStatus === "connecting"
-          ? "◐ connecting"
+          ? "connecting"
           : connectionStatus === "error"
-            ? "● error"
-            : "○ disconnected";
-    const sId = sessionId ? `Session: ${sessionId}` : "Session: —";
-    const sStatus = `Status: ${sessionStatus}`;
-    const err = error ? `\nError: ${error}` : "";
-    headerText.content = `AgentLoop • ${conn} • ${sStatus}\n${sId}${err}`;
+            ? "error"
+            : "disconnected";
+    const sStatus = `session ${sessionStatus}`;
+    const err = error ? ` · ${error}` : "";
+    const agentLabel = routingMode === "pinned" ? `agent ${activeAgentName ?? "(unset)"}` : "agent auto";
+    headerLeft.content = `AgentLoop ${versionTag}`;
+    headerRight.content = `${conn}${err} · ${sStatus} · ${agentLabel} · ws://${engineHost}:${enginePort}`;
   };
 
   const updateConversation = () => {
@@ -872,7 +963,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         "",
         lastAudio ? `Last audio: ${lastAudio}` : "Last audio: —",
         "",
-        "Tip: Quick Actions → copy sel",
+        "Tip: Cmd/Ctrl+C (or Quick Actions → copy sel)",
       ].join("\n");
       return;
     }
@@ -896,26 +987,54 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const updateSidebar = () => {
+    const now = Date.now();
+    if (now - lastInstallCheckAt > 2000) {
+      lastInstallCheckAt = now;
+      void (async () => {
+        const root = enginePaths.repoRoot;
+        const checks: Record<ServiceName, string> = {
+          kokomo: "external/kokomo-mlx/.venv/bin/python",
+          mlx: "external/mlx-llm/.venv/bin/python",
+          vlm: "external/mlx-vlm/.venv/bin/python",
+        };
+        const next: Record<ServiceName, boolean> = { ...installState };
+        for (const name of Object.keys(checks) as ServiceName[]) {
+          try {
+            next[name] = await Bun.file(path.join(root, checks[name])).exists();
+          } catch {
+            next[name] = false;
+          }
+        }
+        installState = next;
+        requestRender();
+      })();
+    }
+
+    const portByService: Record<ServiceName, number> = { kokomo: 8880, mlx: 12345, vlm: 12346 };
+    servicesMeta.content = `active=${activeService} · actions: start/stop/status · ports: k${portByService.kokomo} m${portByService.mlx} v${portByService.vlm}`;
+    const known: ServiceName[] = ["kokomo", "mlx", "vlm"];
+
     const svcLines: string[] = [];
-    const known: ServiceName[] = ["kokomo", "mlx"];
+    svcLines.push("name     inst  state        port   detail");
     for (const name of known) {
       const svc = services[name];
-      if (!svc) {
-        svcLines.push(`${name} · (unknown)`);
-        continue;
-      }
-      const pid = svc.pid ? ` pid=${svc.pid}` : "";
-      const detail = svc.detail ? ` — ${svc.detail}` : "";
-      svcLines.push(`${name} · ${svc.status}${pid}${detail}`);
-      if (svc.lastExitCode != null) svcLines.push(`  lastExitCode: ${svc.lastExitCode}`);
-      if (svc.lastError) svcLines.push(`  lastError: ${svc.lastError}`);
+      const status = (svc?.status ?? "unknown").padEnd(10, " ");
+      const inst = installState[name] ? "yes " : "no  ";
+      const port = String(portByService[name]).padEnd(5, " ");
+      const detail = (svc?.detail ?? "").trim();
+      const tail = svc?.lastError ? `err: ${svc.lastError}` : svc?.lastExitCode != null ? `exit: ${svc.lastExitCode}` : "";
+      svcLines.push(`${name.padEnd(7, " ")} ${inst} ${status} ${port}  ${(detail || tail || "—").slice(0, 60)}`);
     }
-    servicesText.content = svcLines.join("\n");
+
+    const feed = recentServiceFeed.slice(-3);
+    const feedBlock = feed.length ? `\n\nRecent:\n${feed.join("\n")}` : "";
+    servicesText.content = svcLines.join("\n") + feedBlock;
 
     if (!servicesTabsSynced) {
       // Ensure service tab selection starts on kokomo.
       serviceTabs.setSelectedIndex(activeService === "mlx" ? 1 : 0);
       servicesTabsSynced = true;
+      serviceSelectionAnnounceEnabled = true;
     }
 
     // Per-service log tabs
@@ -945,8 +1064,14 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const updateHelp = () => {
-    helpBar.content =
-      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · drag-select auto-copies · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect · ^C quit";
+    const base =
+      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect/start backend · ^C quit";
+    if (toast && Date.now() < toastUntil) {
+      helpBar.content = `${toast}  —  ${base}`;
+      return;
+    }
+    toast = null;
+    helpBar.content = base;
   };
 
   const updateAll = () => {
@@ -1031,29 +1156,127 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     renderer.destroy();
   };
 
-  let connectStarted = false;
-  const connectToEngine = async () => {
-    if (connectStarted) return;
-    connectStarted = true;
+  let connectPromise: Promise<void> | null = null;
+  const connectToEngine = async (opts?: { forceManaged?: boolean }) => {
+    if (connectPromise) return connectPromise;
+    connectPromise = (async () => {
+      const preferredHost = engineHost;
+      const preferredPort = enginePort;
 
-    addSystemMessage(`Connecting to engine at ws://${engineHost}:${enginePort}…`);
+      const tryConnect = async (host: string, port: number, label: string) => {
+        setEngineTarget(host, port);
+        addSystemMessage(`Connecting to ${label} at ${engine.url}… (press ^R to retry)`, { silent: true });
+        log.info(`connect attempt: ${label} -> ${engine.url}`);
     connectionStatus = "connecting";
     error = null;
     updateAll();
+    await engine.connect();
+    connectionStatus = "connected";
+    error = null;
+    updateAll();
+    log.info(`connected: ${engine.url}`);
+        send({ type: "session.create", payload: { sessionId } });
+	        if (!welcomeShown) {
+	          welcomeShown = true;
+	          addSystemMessage(["Welcome to AgentLoop.", "Type a message to chat, or run /help to see commands.", "Quick start: /install list"].join("\n"));
+	        }
+	        engine.send({ type: "service.status", payload: { name: "kokomo" } } as Command);
+	        engine.send({ type: "service.status", payload: { name: "mlx" } } as Command);
+	        engine.send({ type: "service.status", payload: { name: "vlm" } } as Command);
+	
+	        // Autostart MLX if installed. Disable with AGENTLOOP_AUTOSTART_MLX=0.
+	        const autostart = process.env.AGENTLOOP_AUTOSTART_MLX !== "0";
+	        if (!autoStartedMlx && autostart) {
+	          autoStartedMlx = true;
+	          void (async () => {
+	            try {
+	              const mlxVenvPy = path.join(enginePaths.repoRoot, "external/mlx-llm/.venv/bin/python");
+	              const installed = await Bun.file(mlxVenvPy).exists();
+	              if (!installed) return;
+	              log.info("[mlx] autostart");
+	              send({ type: "service.start", payload: { name: "mlx" } });
+	            } catch {
+	              // ignore
+	            }
+	          })();
+	        }
+	      };
 
-    try {
-      await engine.connect();
-      connectionStatus = "connected";
-      error = null;
-      updateAll();
-      engine.send({ type: "service.status", payload: { name: "kokomo" } } as Command);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      connectionStatus = "error";
-      error = msg;
-      addSystemMessage(`Failed to connect: ${msg}`);
-      updateAll();
-    }
+      try {
+        if (!opts?.forceManaged) {
+          await tryConnect(preferredHost, preferredPort, "engine");
+          return;
+        }
+      } catch {
+        addSystemMessage("[runtime] engine not reachable; switching to managed backend…", { silent: true });
+        // fall through to managed-mode connection below
+      }
+
+      if (!isLocalHost(preferredHost)) {
+        connectionStatus = "error";
+        error = "Engine not reachable";
+        addSystemMessage(`Failed to connect to ws://${preferredHost}:${preferredPort}. (Autostart disabled for non-local host.)`);
+        updateAll();
+        return;
+      }
+
+      // 1) Managed engine reuse (off by default in dev so code changes take effect without manual restarts).
+      const state = await readEngineStateFile(enginePaths.stateFile);
+      const reuseManaged = process.env.AGENTLOOP_REUSE_MANAGED_ENGINE === "1";
+      if (state && isPidAlive(state.pid) && reuseManaged) {
+        try {
+          await tryConnect(state.host, state.port, "managed engine");
+          return;
+        } catch {
+          // ignore and start a new one below
+        }
+      }
+      // If we aren't reusing, stop any existing managed engine referenced by the state file.
+      if (state && isPidAlive(state.pid) && !reuseManaged) {
+        await stopManagedEngine({ stateFile: enginePaths.stateFile }).catch(() => {});
+      }
+
+      // 2) Start a managed engine on an ephemeral port (avoids port conflicts).
+      addSystemMessage(`[runtime] starting managed backend…`, { silent: true });
+      try {
+        managedEngineProc?.kill?.();
+      } catch {
+        // ignore
+      }
+      managedEngineProc = spawnManagedEngine({
+        engineDir: enginePaths.engineDir,
+        stateFile: enginePaths.stateFile,
+        host: preferredHost,
+      });
+      try {
+        (managedEngineProc as any)?.unref?.();
+      } catch {
+        // ignore
+      }
+
+      const nextState = await waitForEngineStateFile({ stateFile: enginePaths.stateFile });
+      if (!nextState) {
+        connectionStatus = "error";
+        error = "Engine did not become ready";
+        addSystemMessage(`[runtime] failed to start (no state file written): ${enginePaths.stateFile}`, { silent: true });
+        updateAll();
+        return;
+      }
+
+      try {
+        await tryConnect(nextState.host, nextState.port, "managed engine");
+        addSystemMessage(`[runtime] managed backend ready (pid ${nextState.pid})`, { silent: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        connectionStatus = "error";
+        error = msg;
+        addSystemMessage(`[runtime] failed to connect after start: ${msg}`, { silent: true });
+        updateAll();
+      }
+    })().finally(() => {
+      connectPromise = null;
+    });
+    return connectPromise;
   };
 
   // Streaming batching (avoid repainting per-token)
@@ -1065,7 +1288,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     requestRender();
   };
 
-  const send = (command: Command) => engine.send(command);
+  const send = (command: Command) => {
+    log.data("send command", command);
+    engine.send(command);
+  };
 
   const newSession = () => {
     messages = [];
@@ -1074,24 +1300,31 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     sessionStatus = "idle";
     const next = createId();
     sessionId = next;
-    send({ type: "session.create", payload: { sessionId: next } });
-    addSystemMessage("New session.");
+    log.info(`new session: ${next}`);
+    if (connectionStatus === "connected") {
+      send({ type: "session.create", payload: { sessionId: next } });
+      addSystemMessage("New session.");
+    } else {
+      addSystemMessage("New session (will create when connected).");
+    }
   };
 
   const sendMessage = (content: string) => {
-    if (!sessionId) {
-      addSystemMessage("No session. Try ^R to reconnect.");
+    if (!ensureEngineConnected({ quiet: true })) {
+      addSystemMessage("Tip: press ^R to reconnect/start backend.");
       return;
     }
+    log.data("user message", { content, length: content.length });
+    pendingPerf = { startedAt: Date.now(), contentLength: content.length, tokens: 0 };
     const userMessage: Message = { id: createId(), role: "user", content, timestamp: Date.now() };
     messages = [...messages, userMessage];
     send({ type: "session.send", payload: { sessionId, content } });
     requestRender();
   };
 
-  const ensureEngineConnected = (): boolean => {
+  const ensureEngineConnected = (opts?: { quiet?: boolean }): boolean => {
     if (connectionStatus !== "connected") {
-      addSystemMessage("Not connected to engine.");
+      if (!opts?.quiet) addSystemMessage("Not connected to engine.");
       return false;
     }
     return true;
@@ -1119,7 +1352,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const copySelection = async () => {
     const selected = getSelectionText();
     if (!selected.trim()) {
-      addSystemMessage("Nothing selected.");
+      addSystemMessage("Nothing selected. Drag to select text, then use Cmd/Ctrl+C (or Quick Actions → copy sel).");
       return;
     }
     await copyText(selected, "selection");
@@ -1167,19 +1400,30 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const requestServiceStatus = (name?: ServiceName) => {
     if (!ensureEngineConnected()) return;
     send({ type: "service.status", payload: { name } });
+    if (name) setToast(`service: ${name} status…`);
+  };
+
+  const requestAgentList = () => {
+    if (!ensureEngineConnected()) return;
+    pendingAgentList = true;
+    send({ type: "agent.list", payload: {} });
+    setToast("agents: list…");
+  };
+
+  const configureSession = (payload: { routingMode?: "auto" | "pinned"; agent?: string | null; sessionPrompt?: string | null }) => {
+    if (!ensureEngineConnected()) return;
+    send({ type: "session.configure", payload: { sessionId, ...payload } });
   };
 
   const startService = (name: ServiceName) => {
     if (!ensureEngineConnected()) return;
-    addSystemMessage(`Starting service: ${name}`);
     // Switch the sidebar to the relevant logs immediately for better feedback.
     activeLogService = name;
     // Expand logs section if it was collapsed.
     logsCollapsed = false;
     logsServiceTabs.visible = true;
     logsScroll.visible = true;
-    // Also echo a short burst of logs into the conversation so startup progress is visible even if the sidebar is narrow.
-    inlineLogFollow[name] = { until: Date.now() + 10_000, lines: 0 };
+    setToast(`service: ${name} start…`);
     send({ type: "service.start", payload: { name } });
     requestServiceStatus(name);
     updateSidebar();
@@ -1188,7 +1432,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const stopService = (name: ServiceName) => {
     if (!ensureEngineConnected()) return;
-    addSystemMessage(`Stopping service: ${name}`);
+    setToast(`service: ${name} stop…`);
     send({ type: "service.stop", payload: { name } });
     requestServiceStatus(name);
     requestRender();
@@ -1198,7 +1442,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     if (!ensureEngineConnected()) return false;
     const current = services["kokomo"];
     if (current?.status === "running") return true;
-    addSystemMessage("[say] starting kokomo…");
+    addSystemMessage("[say] starting kokomo…", { silent: true });
     send({ type: "service.start", payload: { name: "kokomo" } });
 
     const start = Date.now();
@@ -1217,29 +1461,108 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     const trimmed = raw.trim();
     const parts = trimmed.replace(/^\//, "").split(/\s+/).filter(Boolean);
     const cmd = (parts[0] ?? "").toLowerCase();
+    log.data("slash command", { raw, cmd, args: parts.slice(1) });
 
-    const helpText = [
-      "Commands:",
-      "  /help",
-      "  /say <text>",
-      "  /install list",
-      "  /install kokomo|mlx [--yes]",
-      "  /install vlm [--yes]",
-      "  /install mlx-model <modelId> [--yes]",
-      "  /copy last",
-      "  /copy <text>",
-      "  /service kokomo|mlx|vlm start|stop|status",
-      "  /kokomo start|stop|status",
-      "  /mlx start|stop|status",
-      "  /vlm start|stop|status",
-      "",
-      "Tips:",
-      "  /install runs local commands only when you pass --yes.",
-      "  If /say fails, run: /install kokomo --yes",
-    ].join("\n");
+      const helpText = [
+        "Commands:",
+        "  /help",
+        "  /agent list",
+        "  /agent set <name>   (pins an agent)",
+        "  /agent auto         (router decides)",
+        "  /prompt show",
+        "  /prompt set <text>",
+        "  /prompt clear",
+        "  /say <text>",
+        "  /install list",
+        "  /install kokomo|mlx [--yes]",
+        "  /install vlm [--yes]",
+        "  /install mlx-model <modelId> [--yes]",
+        "  /copy last",
+        "  /copy <text>",
+        "  /commit <message> [--yes] [--all] [--amend]",
+        "  /service kokomo|mlx|vlm start|stop|status",
+        "  /runtime start|stop|restart|status   (managed backend)",
+        "  /kokomo start|stop|status",
+        "  /mlx start|stop|status",
+        "  /vlm start|stop|status",
+        "  /logo <domain>  (download logo PNG to cache)",
+        "",
+        "Tips:",
+        "  /install runs local commands only when you pass --yes.",
+        "  /commit will not run unless you pass --yes.",
+        "  If /say fails, run: /install kokomo --yes",
+        "  If chat says no LLM, run: /install mlx --yes  →  /service mlx start",
+      ].join("\n");
 
     if (!cmd || cmd === "help") {
       addSystemMessage(helpText);
+      return;
+    }
+
+    if (cmd === "agent") {
+      const sub = (parts[1] ?? "list").toLowerCase();
+      if (sub === "list") {
+        requestAgentList();
+        return;
+      }
+      if (sub === "auto") {
+        routingMode = "auto";
+        activeAgentName = null;
+        configureSession({ routingMode: "auto", agent: null });
+        setToast("agent: auto");
+        requestRender();
+        return;
+      }
+      if (sub === "set" || sub === "pin") {
+        const name = (parts[2] ?? "").trim();
+        if (!name) {
+          addSystemMessage("Usage: /agent set <name>");
+          return;
+        }
+        routingMode = "pinned";
+        activeAgentName = name;
+        configureSession({ routingMode: "pinned", agent: name });
+        setToast(`agent: pinned (${name})`);
+        requestRender();
+        return;
+      }
+      addSystemMessage("Usage: /agent list | /agent set <name> | /agent auto");
+      return;
+    }
+
+    if (cmd === "prompt") {
+      const sub = (parts[1] ?? "show").toLowerCase();
+      if (sub === "show") {
+        addSystemMessage(
+          [
+            "Session prompt:",
+            sessionPromptOverride?.trim() ? sessionPromptOverride.trim() : "(none)",
+            "",
+            "Commands:",
+            "  /prompt set <text>",
+            "  /prompt clear",
+          ].join("\n")
+        );
+        return;
+      }
+      if (sub === "clear" || sub === "reset") {
+        sessionPromptOverride = null;
+        configureSession({ sessionPrompt: null });
+        setToast("prompt: cleared");
+        return;
+      }
+      if (sub === "set") {
+        const text = parts.slice(2).join(" ").trim();
+        if (!text) {
+          addSystemMessage("Usage: /prompt set <text>");
+          return;
+        }
+        sessionPromptOverride = text;
+        configureSession({ sessionPrompt: text });
+        setToast("prompt: set");
+        return;
+      }
+      addSystemMessage("Usage: /prompt show | /prompt set <text> | /prompt clear");
       return;
     }
 
@@ -1254,11 +1577,13 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
             "Install targets:",
             "  kokomo     - local TTS (mlx-audio[tts])",
             "  mlx        - MLX LLM tooling (mlx-lm)",
+            "  vlm        - MLX VLM tooling (mlx-vlm)",
             "  mlx-model  - prefetch an MLX model",
             "",
             "Examples:",
             "  /install kokomo --yes",
             "  /install mlx --yes",
+            "  /install vlm --yes",
             "  /install mlx-model mlx-community/Llama-3.2-3B-Instruct-4bit --yes",
           ].join("\n")
         );
@@ -1298,15 +1623,59 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
       addSystemMessage(`[install] starting: ${spec.id}`);
       void (async () => {
+        try {
+          const { cmd, cwd } = spec.run(argRest);
+          log.info(`[install:${spec.id}] start cmd=${formatCmd(cmd)} cwd=${cwd}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          addSystemMessage(`[install:${spec.id}] failed before start: ${msg}`);
+          log.error(`[install:${spec.id}] failed before start: ${msg}`);
+          return;
+        }
+
         const code = await runInstaller(spec, argRest, (line) => {
-          addSystemMessage(`[install:${spec.id}] ${line}`);
+          addSystemMessage(`[install:${spec.id}] ${line}`, { silent: true });
+          log.info(`[install:${spec.id}] ${line}`);
         }).catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           addSystemMessage(`[install:${spec.id}] failed: ${msg}`);
+          log.error(`[install:${spec.id}] failed: ${msg}`);
           return 1;
         });
 
         addSystemMessage(code === 0 ? `[install:${spec.id}] done` : `[install:${spec.id}] exited with code ${code}`);
+        log.info(`[install:${spec.id}] exit code=${code}`);
+      })();
+      return;
+    }
+
+    if (cmd === "logo") {
+      const domain = parts[1];
+      if (!domain) {
+        addSystemMessage("Usage: /logo <domain>");
+        return;
+      }
+      addSystemMessage(`[logo] fetching ${domain}…`);
+      log.info(`[logo] fetch start: ${domain}`);
+      void (async () => {
+        try {
+          const { filePath, url, bytes, cached } = await fetchLogoToCache({ domain });
+          addSystemMessage(
+            [
+              `[logo] ${domain}`,
+              `  url: ${url}`,
+              `  file: ${filePath}`,
+              `  bytes: ${bytes}${cached ? " (cached)" : ""}`,
+            ].join("\n")
+          );
+          log.info(`[logo] fetched ${domain} bytes=${bytes} file=${filePath} cached=${cached}`);
+          const copied = await tryCopyToClipboard(filePath);
+          if (copied) addSystemMessage("[logo] copied file path to clipboard");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          addSystemMessage(`[logo] failed: ${msg}`);
+          log.error(`[logo] failed: ${msg}`);
+        }
       })();
       return;
     }
@@ -1336,19 +1705,83 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return;
     }
 
+    if (cmd === "commit") {
+      const yes = parts.includes("--yes") || parts.includes("-y");
+      const all = parts.includes("--all") || parts.includes("-a");
+      const amend = parts.includes("--amend");
+
+      const message = parts
+        .slice(1)
+        .filter((p) => !["--yes", "-y", "--all", "-a", "--amend"].includes(p))
+        .join(" ")
+        .trim();
+
+      if (!message) {
+        addSystemMessage("Usage: /commit <message> [--yes] [--all] [--amend]");
+        return;
+      }
+
+      void (async () => {
+        const cwd = enginePaths.repoRoot;
+
+        const status = await runGit({ cwd, args: ["status", "--porcelain"] });
+        const changes = (status.stdout ?? "").trimEnd();
+
+        if (!yes) {
+          addSystemMessage("[git] /commit is a local write action; re-run with --yes to proceed.");
+          addSystemMessage(`[git] message: ${message}`);
+          addSystemMessage(`[git] flags: ${[all ? "--all" : "", amend ? "--amend" : ""].filter(Boolean).join(" ") || "(none)"}`);
+          addSystemMessage(changes ? `[git] pending changes:\n${changes}` : "[git] pending changes: (none)");
+          return;
+        }
+
+        if (all) {
+          addSystemMessage("[git] staging: git add -A");
+          const addRes = await runGit({ cwd, args: ["add", "-A"] });
+          if (!addRes.ok) {
+            addSystemMessage(`[git] add failed (code ${addRes.exitCode})`);
+            const out = [addRes.stdout, addRes.stderr].join("\n").trim();
+            if (out) addSystemMessage(`[git] ${out}`);
+            return;
+          }
+        }
+
+        addSystemMessage(`[git] committing${amend ? " (amend)" : ""}…`);
+        const args = ["commit", "-m", message];
+        if (amend) args.push("--amend");
+        const commitRes = await runGit({ cwd, args });
+        if (!commitRes.ok) {
+          addSystemMessage(`[git] commit failed (code ${commitRes.exitCode})`);
+          const out = [commitRes.stdout, commitRes.stderr].join("\n").trim();
+          if (out) addSystemMessage(`[git] ${out}`);
+          return;
+        }
+
+        const out = commitRes.stdout.trimEnd();
+        addSystemMessage(out ? `[git] ${out}` : "[git] committed.");
+      })();
+      return;
+    }
+
     if (cmd === "service" || cmd === "svc") {
-      const nameRaw = parts[1] ?? "";
-      const name = normalizeServiceName(nameRaw);
-      const action = (parts[2] ?? "status").toLowerCase();
+      const a1 = (parts[1] ?? "").toLowerCase();
+      const a2 = (parts[2] ?? "").toLowerCase();
+
+      // Support both:
+      // - /service <name> <action>
+      // - /service <action> [name]   (uses activeService by default)
+      const isAction = (x: string) => x === "start" || x === "stop" || x === "status";
+      const action = isAction(a1) ? a1 : isAction(a2) ? a2 : "status";
+      const nameRaw = isAction(a1) ? parts[2] ?? "" : parts[1] ?? "";
+      const name = normalizeServiceName(nameRaw) ?? (isAction(a1) ? activeService : null);
       if (!name) {
-        addSystemMessage(`Unknown service "${nameRaw}". Try: kokomo|mlx`);
+        addSystemMessage(`Usage: /service kokomo|mlx|vlm start|stop|status`);
         return;
       }
       if (action === "start") return startService(name);
       if (action === "stop") return stopService(name);
       if (action === "status") {
         requestServiceStatus(name);
-        addSystemMessage(`Requested status: ${name}`);
         return;
       }
       addSystemMessage(`Unknown action "${action}". Try: start|stop|status`);
@@ -1360,7 +1793,6 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       if (action === "start") return startService("kokomo");
       if (action === "stop") return stopService("kokomo");
       requestServiceStatus("kokomo");
-      addSystemMessage("Requested status: kokomo");
       return;
     }
 
@@ -1369,7 +1801,6 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       if (action === "start") return startService("mlx");
       if (action === "stop") return stopService("mlx");
       requestServiceStatus("mlx");
-      addSystemMessage("Requested status: mlx");
       return;
     }
 
@@ -1378,7 +1809,48 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       if (action === "start") return startService("vlm");
       if (action === "stop") return stopService("vlm");
       requestServiceStatus("vlm");
-      addSystemMessage("Requested status: vlm");
+      return;
+    }
+
+    if (cmd === "runtime" || cmd === "rt" || cmd === "backend") {
+      const action = (parts[1] ?? "status").toLowerCase();
+      if (action === "start") {
+        engine.disconnect();
+        void connectToEngine({ forceManaged: true });
+        return;
+      }
+      if (action === "stop") {
+        addSystemMessage("[runtime] stopping managed backend…");
+        void (async () => {
+          const res = await stopManagedEngine({ stateFile: enginePaths.stateFile });
+          engine.disconnect();
+          addSystemMessage(res.ok ? `[runtime] ${res.detail}` : `[runtime] stop: ${res.detail}`);
+        })();
+        return;
+      }
+      if (action === "restart") {
+        addSystemMessage("[runtime] restarting managed backend…");
+        void (async () => {
+          await stopManagedEngine({ stateFile: enginePaths.stateFile }).catch(() => {});
+          engine.disconnect();
+          await connectToEngine({ forceManaged: true });
+        })();
+        return;
+      }
+      // status (default)
+      void (async () => {
+        const state = await readEngineStateFile(enginePaths.stateFile);
+        if (!state) {
+          addSystemMessage(`[runtime] managed backend: (none)  stateFile=${enginePaths.stateFile}`);
+          addSystemMessage(`[runtime] configured target: ws://${engineHost}:${enginePort}`);
+          return;
+        }
+        const alive = isPidAlive(state.pid);
+        addSystemMessage(
+          `[runtime] managed backend: ${alive ? "running" : "stale"}  pid=${state.pid}  ws://${state.host}:${state.port}`
+        );
+        addSystemMessage(`[runtime] stateFile=${enginePaths.stateFile}`);
+      })();
       return;
     }
 
@@ -1425,6 +1897,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     }
 
     addSystemMessage(`Unknown command "/${cmd}". Try /help`);
+    log.error(`unknown slash command: /${cmd}`);
   };
 
   const submitInput = () => {
@@ -1466,6 +1939,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     const name = String(opt?.value ?? opt?.name ?? "").trim();
     if (name === "kokomo" || name === "mlx" || name === "vlm") {
       activeService = name;
+      requestServiceStatus(name);
+      if (serviceSelectionAnnounceEnabled) setToast(`active service: ${name}`);
       requestRender();
     }
   });
@@ -1536,7 +2011,6 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
             const ok = await tryCopyToClipboard(selected);
             if (ok) {
               addSystemMessage(`[copy] copied selection (${selected.length} chars)`);
-              renderer.clearSelection();
               requestRender();
             } else {
               addSystemMessage("[copy] failed (clipboard tool not found)");
@@ -1550,8 +2024,14 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     // Quit (only when not copying a selection)
     if (key.ctrl && key.name === "c") {
       key.preventDefault();
-      destroy();
-      process.exit(0);
+      const now = Date.now();
+      if (now - quitArmedAt < 750) {
+        destroy();
+        process.exit(0);
+      }
+      quitArmedAt = now;
+      addSystemMessage("Press ^C again to quit.");
+      return;
     }
 
     // Copy last assistant
@@ -1579,7 +2059,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     if (key.ctrl && key.name === "r") {
       key.preventDefault();
       engine.disconnect();
-      void engine.connect().catch((err) => {
+      void connectToEngine().catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         addSystemMessage(`Reconnect failed: ${msg}`);
       });
@@ -1630,6 +2110,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
 
   const handleEngineEvent = (event: EngineEvent) => {
+    // Avoid spamming logs with per-token streaming events; perf logging covers this path.
+    if (event.type !== "assistant.token") log.data("engine event", event);
     switch (event.type) {
       case "session.created":
         sessionId = event.sessionId;
@@ -1641,8 +2123,35 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
           streamingContent = "";
         }
         break;
+      case "router.decision":
+        routingMode = event.routingMode;
+        activeAgentName = event.agent;
+        lastRouterReason = event.reason ?? null;
+        lastRouterMs = event.durationMs ?? null;
+        break;
+      case "agent.list":
+        lastAgentList = event.agents;
+        if (pendingAgentList) {
+          pendingAgentList = false;
+          const lines = [
+            "Agents:",
+            ...event.agents.map((a) => `- ${a.name}${a.description ? ` — ${a.description}` : ""}  (tools: ${a.tools.join(", ") || "none"})`),
+          ];
+          addSystemMessage(lines.join("\n"));
+        }
+        break;
       case "assistant.token":
         streamingBuffer += event.token;
+        if (pendingPerf) {
+          pendingPerf.tokens += 1;
+          if (!pendingPerf.firstTokenAt) {
+            pendingPerf.firstTokenAt = Date.now();
+            log.data("perf.first_token", {
+              ms: pendingPerf.firstTokenAt - pendingPerf.startedAt,
+              contentLength: pendingPerf.contentLength,
+            });
+          }
+        }
         if (!flushTimer) flushTimer = setTimeout(flushStreaming, 200);
         break;
       case "assistant.message":
@@ -1653,24 +2162,29 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         streamingContent = streamingBuffer;
         streamingBuffer = "";
         addMessage({ id: event.messageId, role: "assistant", content: event.content, timestamp: Date.now() });
+        log.data("assistant message", { id: event.messageId, content: event.content });
+        if (pendingPerf) {
+          const doneAt = Date.now();
+          log.data("perf.complete", {
+            ms: doneAt - pendingPerf.startedAt,
+            ttfbMs: pendingPerf.firstTokenAt ? pendingPerf.firstTokenAt - pendingPerf.startedAt : null,
+            contentLength: pendingPerf.contentLength,
+            tokenEvents: pendingPerf.tokens,
+            responseLength: event.content.length,
+          });
+          pendingPerf = null;
+        }
         streamingContent = "";
         break;
       case "tool.call":
-        addSystemMessage(`[tool] call: ${event.tool.name} (${event.tool.id})`);
+        log.data("tool call", event.tool);
         break;
       case "tool.result":
-        addSystemMessage(`[tool] result: ${event.toolId}`);
+        log.data("tool result", { toolId: event.toolId, result: event.result });
         break;
       case "service.status":
         services = { ...services, [event.service.name]: event.service };
-        {
-          const detail = event.service.detail ? ` — ${event.service.detail}` : "";
-          const line = `[service] ${event.service.name}: ${event.service.status}${detail}`;
-          if (lastServiceStatusLineByName[event.service.name] !== line) {
-            lastServiceStatusLineByName = { ...lastServiceStatusLineByName, [event.service.name]: line };
-            addSystemMessage(line);
-          }
-        }
+        log.data("service status", event.service);
         break;
       case "service.log":
         {
@@ -1678,22 +2192,14 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
           const existing = serviceLogs[event.name] ?? [];
           const next = [...existing, line];
           serviceLogs = { ...serviceLogs, [event.name]: clampLines(next, 400) };
-
-          const follow = inlineLogFollow[event.name];
-          if (follow && Date.now() < follow.until && follow.lines < 40) {
-            follow.lines += 1;
-            // Render as log-like system lines (no timestamps/headers) to avoid interrupting output.
-            addSystemMessage(`[${event.name}] ${line}`);
-            if (follow.lines >= 40) {
-              addSystemMessage(`[${event.name}] (log preview truncated — see sidebar)`);
-            }
-          }
+          recentServiceFeed.push(`${event.name} ${line}`.slice(0, 140));
+          if (recentServiceFeed.length > 60) recentServiceFeed.splice(0, recentServiceFeed.length - 60);
         }
         break;
       case "error":
         error = event.error;
         if (connectionStatus !== "connected") connectionStatus = "error";
-        addSystemMessage(`Error: ${event.error}`);
+        log.error(`engine error: ${event.error}`);
         break;
     }
     updateAll();
@@ -1703,10 +2209,12 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   engine.on("connected", () => {
     connectionStatus = "connected";
     error = null;
+    log.info("engine connected");
     updateAll();
   });
   engine.on("disconnected", () => {
     connectionStatus = "disconnected";
+    log.info("engine disconnected");
     updateAll();
   });
 

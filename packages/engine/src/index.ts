@@ -1,4 +1,8 @@
 #!/usr/bin/env bun
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   CommandSchema,
   createId,
@@ -11,6 +15,23 @@ import {
 import { parseEngineCli } from "./cli.js";
 import { ServiceManager } from "./services/ServiceManager.js";
 import { runSimpleAgent } from "./agent/simpleAgent.js";
+import { mlxChatCompletionStream } from "./llm/mlxClient.js";
+import type { AgentPack } from "./operator/agentRegistry.js";
+import { loadAgentPacks } from "./operator/agentRegistry.js";
+import { buildChatMessages, composeSystemPrompt, loadWorkspacePrompt } from "./operator/promptStack.js";
+import { routeHeuristic } from "./operator/router.js";
+
+function isSimpleMessage(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+  if (trimmed.startsWith("TOOL_CALL:")) return false;
+  // Heuristic: short, single-turn chat is "simple".
+  return trimmed.length <= 220 && trimmed.split(/\s+/).length <= 60;
+}
+
+function repoRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+}
 
 const cli = (() => {
   try {
@@ -35,6 +56,7 @@ function createSession(id: string): Session {
     messages: [],
     toolCalls: [],
     createdAt: Date.now(),
+    routingMode: "auto",
   };
 }
 
@@ -57,6 +79,52 @@ async function handleSessionCreate(ws: Bun.ServerWebSocket<unknown>, sessionId?:
   sendEvent(ws, { type: "session.status", sessionId: id, status: "idle", detail: "Session ready" });
 }
 
+let cachedAgents: AgentPack[] | null = null;
+let cachedWorkspacePrompt: string | null = null;
+let lastPromptLoadAt = 0;
+async function getAgentsAndWorkspace(): Promise<{ agents: AgentPack[]; workspacePrompt: string }> {
+  const now = Date.now();
+  const root = repoRoot();
+  if (!cachedAgents || cachedWorkspacePrompt == null || now - lastPromptLoadAt > 2000) {
+    const [agents, workspacePrompt] = await Promise.all([loadAgentPacks(root), loadWorkspacePrompt(root)]);
+    cachedAgents = agents;
+    cachedWorkspacePrompt = workspacePrompt;
+    lastPromptLoadAt = now;
+  }
+  return { agents: cachedAgents, workspacePrompt: cachedWorkspacePrompt ?? "" };
+}
+
+async function handleSessionConfigure(
+  ws: Bun.ServerWebSocket<unknown>,
+  sessionId: string,
+  payload: { routingMode?: "auto" | "pinned"; agent?: string | null; sessionPrompt?: string | null }
+) {
+  let session = sessions.get(sessionId);
+  if (!session) {
+    session = createSession(sessionId);
+    sessions.set(sessionId, session);
+  }
+
+  if (payload.routingMode) session.routingMode = payload.routingMode;
+  if (payload.agent !== undefined) session.agent = payload.agent ?? undefined;
+  if (payload.sessionPrompt !== undefined) session.sessionPrompt = payload.sessionPrompt ?? undefined;
+
+  sendEvent(ws, {
+    type: "session.status",
+    sessionId,
+    status: session.status,
+    detail: `Configured (${session.routingMode}${session.agent ? `: ${session.agent}` : ""})`,
+  });
+}
+
+async function handleAgentList(ws: Bun.ServerWebSocket<unknown>) {
+  const { agents } = await getAgentsAndWorkspace();
+  sendEvent(ws, {
+    type: "agent.list",
+    agents: agents.map((a) => ({ name: a.name, description: a.description, tools: a.tools })),
+  });
+}
+
 async function handleSessionSend(ws: Bun.ServerWebSocket<unknown>, sessionId: string, content: string) {
   let session = sessions.get(sessionId);
   if (!session) {
@@ -74,46 +142,86 @@ async function handleSessionSend(ws: Bun.ServerWebSocket<unknown>, sessionId: st
   session.messages.push(userMessage);
   session.status = "thinking";
 
-  sendEvent(ws, { type: "session.status", sessionId, status: "thinking", detail: "Processing..." });
-
-  // Simulate thinking delay
-  await Bun.sleep(300);
-
-  session.status = "streaming";
-  sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: "Generating response..." });
-
-  const useMlx =
-    (process.env.AGENTLOOP_LLM ?? "").toLowerCase() === "mlx" ||
-    (services.getState("mlx").status === "running");
+  const prefersMlx = (process.env.AGENTLOOP_LLM ?? "").toLowerCase() === "mlx";
+  const canAutoTryMlx = prefersMlx || services.canStart("mlx") || (await services.isServiceHealthy("mlx"));
+  if (canAutoTryMlx && services.getState("mlx").status !== "running") {
+    // Best-effort: if MLX is installed (or already serving externally), bring it up automatically.
+    try {
+      await services.start("mlx");
+    } catch {
+      // ignore; we'll fall back below
+    }
+  }
+  const mlxHealthy = await services.isServiceHealthy("mlx");
+  const useMlx = prefersMlx || services.getState("mlx").status === "running" || mlxHealthy;
 
   let responseText = "";
+  let alreadyStreamed = false;
   if (useMlx) {
     try {
-      session.status = "tool_use";
-      sendEvent(ws, { type: "session.status", sessionId, status: "tool_use", detail: "Agent + tools..." });
+      const startRouteAt = Date.now();
+      const { agents, workspacePrompt } = await getAgentsAndWorkspace();
+      const routingMode = session.routingMode ?? "auto";
+      const pinnedName = routingMode === "pinned" ? (session.agent ?? "").trim() : "";
+      const pinnedAgent = pinnedName ? agents.find((a) => a.name === pinnedName) : null;
+      const decision = pinnedAgent ? { agent: pinnedAgent.name, toolsAllowed: pinnedAgent.tools, reason: "pinned" } : routeHeuristic(content, agents);
+      const selected = agents.find((a) => a.name === decision.agent) ?? agents.find((a) => a.name === "chat.quick") ?? agents[0]!;
 
-      const sys = process.env.AGENTLOOP_SYSTEM_PROMPT?.trim();
-      responseText = await runSimpleAgent({
-        sessionMessages: session.messages,
-        services,
-        systemPrompt: sys,
-        onEvent: (evt) => {
-          if (evt.type === "tool.call") {
-            session.toolCalls.push(evt.tool);
-            sendEvent(ws, { type: "tool.call", sessionId, tool: evt.tool });
-          } else if (evt.type === "tool.result") {
-            const t = session.toolCalls.find((x) => x.id === evt.toolId);
-            if (t) {
-              t.status = (evt.result as any)?.ok ? "completed" : "failed";
-              t.result = evt.result;
-            }
-            sendEvent(ws, { type: "tool.result", sessionId, toolId: evt.toolId, result: evt.result });
-          }
-        },
+      sendEvent(ws, {
+        type: "router.decision",
+        sessionId,
+        routingMode: pinnedAgent ? "pinned" : "auto",
+        agent: selected.name,
+        toolsAllowed: selected.tools,
+        reason: decision.reason,
+        durationMs: Date.now() - startRouteAt,
       });
 
+      const extraSys = process.env.AGENTLOOP_SYSTEM_PROMPT?.trim();
+      const system = [composeSystemPrompt({ agent: selected, workspacePrompt, sessionPrompt: session.sessionPrompt }), extraSys]
+        .filter(Boolean)
+        .join("\n\n");
+
+      const shouldUseQuick = selected.name === "chat.quick" || (selected.tools.length === 0 && isSimpleMessage(content));
+      if (shouldUseQuick) {
+        session.status = "streaming";
+        sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: `Local LLM (${selected.name})...` });
+        const messages = buildChatMessages({ system, sessionMessages: session.messages, maxHistoryTurns: selected.maxHistoryTurns });
+        alreadyStreamed = true;
+        const streamed = await mlxChatCompletionStream(
+          messages,
+          (token) => sendEvent(ws, { type: "assistant.token", sessionId, token }),
+          { maxTokens: 256 }
+        );
+        responseText = streamed.content;
+      } else {
+        session.status = "tool_use";
+        sendEvent(ws, { type: "session.status", sessionId, status: "tool_use", detail: `Agent (${selected.name})...` });
+
+        responseText = await runSimpleAgent({
+          sessionMessages: session.messages,
+          services,
+          systemPrompt: system,
+          maxToolCalls: selected.maxToolCalls,
+          allowedTools: selected.tools,
+          onEvent: (evt) => {
+            if (evt.type === "tool.call") {
+              session.toolCalls.push(evt.tool);
+              sendEvent(ws, { type: "tool.call", sessionId, tool: evt.tool });
+            } else if (evt.type === "tool.result") {
+              const t = session.toolCalls.find((x) => x.id === evt.toolId);
+              if (t) {
+                t.status = (evt.result as any)?.ok ? "completed" : "failed";
+                t.result = evt.result;
+              }
+              sendEvent(ws, { type: "tool.result", sessionId, toolId: evt.toolId, result: evt.result });
+            }
+          },
+        });
+      }
+
       session.status = "streaming";
-      sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: "Generating response..." });
+      sendEvent(ws, { type: "session.status", sessionId, status: "streaming", detail: "Finalizing..." });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       responseText = [
@@ -148,12 +256,11 @@ async function handleSessionSend(ws: Bun.ServerWebSocket<unknown>, sessionId: st
     ].join("\n");
   }
 
-  // Stream tokens
-  const tokens = responseText.split(/(\s+)/);
-  for (const token of tokens) {
-    if (token) {
-      sendEvent(ws, { type: "assistant.token", sessionId, token });
-      await Bun.sleep(20); // Simulate streaming delay
+  // Stream tokens (fallback for non-streaming paths)
+  if (!alreadyStreamed) {
+    const tokens = responseText.split(/(\s+)/);
+    for (const token of tokens) {
+      if (token) sendEvent(ws, { type: "assistant.token", sessionId, token });
     }
   }
 
@@ -235,8 +342,14 @@ function handleCommand(ws: Bun.ServerWebSocket<unknown>, data: unknown) {
     case "session.send":
       handleSessionSend(ws, command.payload.sessionId, command.payload.content);
       break;
+    case "session.configure":
+      void handleSessionConfigure(ws, command.payload.sessionId, command.payload);
+      break;
     case "session.cancel":
       handleSessionCancel(ws, command.payload.sessionId);
+      break;
+    case "agent.list":
+      void handleAgentList(ws);
       break;
     case "service.start":
       void handleServiceStart(ws, command.payload.name);
@@ -286,6 +399,28 @@ const server = Bun.serve({
     },
   },
 });
+
+if (cli.stateFile) {
+  try {
+    mkdirSync(dirname(cli.stateFile), { recursive: true });
+    writeFileSync(
+      cli.stateFile,
+      JSON.stringify(
+        {
+          host: cli.host,
+          port: server.port,
+          pid: process.pid,
+          startedAt: Date.now(),
+        },
+        null,
+        2
+      )
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[engine] Failed to write state file (${cli.stateFile}): ${msg}`);
+  }
+}
 
 const purple = (s: string) => `\x1b[35m${s}\x1b[0m`;
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;

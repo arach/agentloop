@@ -26,24 +26,34 @@ This repo is a working prototype: TUI + engine + local services. More detail: `d
 # Install dependencies
 bun install
 
-# Terminal 1: Start the engine
-bun run engine
+# Check your environment (Bun, Python/uv, clipboard/audio tools)
+bun run doctor
 
-# Terminal 2: Start the TUI
+# Start everything (TUI will auto-manage backend if needed)
+bun run agentloop:start
+
+# Or start the TUI directly
 bun run tui
 ```
 
 In the TUI:
 
+- Type a message to chat (if no LLM is running, you’ll get setup instructions).
 - `/install kokomo --yes` → `/service kokomo start` → `/say hello from agentloop`
 - `/install mlx --yes` → `/service mlx start` → chat normally (engine uses MLX while running)
+- `/logo openai.com` → saves a logo PNG to `.agentloop/cache/logos`
 
 Demo sequences: `docs/demo.md`.
 
+### Logs
+
+- All UI diagnostics and engine event tracing go to `.agentloop/logs/agentloop.log`. Tail it while reproducing to see slash commands, installs, service events, and any uncaught exceptions.
+
 ### Engine management (stop/restart/ports)
 
-- Stop the engine: `Ctrl+C` in the engine terminal.
-- Restart the engine: stop (`Ctrl+C`) then run `bun run engine` again.
+- The TUI will auto-start a local backend on an ephemeral port and track it in `.agentloop/run/engine.json`.
+- Stop/restart the managed backend from the TUI: `/runtime stop` and `/runtime restart`.
+- If you run the engine manually, stop it with `Ctrl+C` in the engine terminal.
 - Change ports:
   - Engine: `bun run engine -- --port 7778`
   - TUI: `bun run tui -- --port 7778`
@@ -69,6 +79,7 @@ Service docs:
 - `/install list`
 - `/install kokomo|mlx|vlm --yes`
 - `/service kokomo|mlx|vlm start|stop|status`
+- `/runtime start|stop|restart|status` (managed backend)
 - `/say <text>` (TTS)
 
 ## Local TTS (Kokomo defaults)
@@ -134,6 +145,7 @@ Environment variables:
 
 - `AGENTLOOP_HOST` - Engine host (default: `127.0.0.1`)
 - `AGENTLOOP_PORT` - Engine port (default: `7777`)
+- `AGENTLOOP_ENGINE_STATE_FILE` - Where the managed backend writes its state (default: `.agentloop/run/engine.json`)
 - `AGENTLOOP_MANAGE_KOKOMO` - If `1`, the engine will auto-start Kokomo on boot (you can also start/stop it from the TUI).
 - `AGENTLOOP_MANAGE_MLX` - If `1`, the engine will auto-start the MLX LLM service on boot.
 - `AGENTLOOP_MANAGE_VLM` - If `1`, the engine will auto-start the MLX VLM service on boot.

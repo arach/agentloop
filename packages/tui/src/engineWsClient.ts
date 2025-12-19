@@ -1,14 +1,13 @@
 import { EventEmitter } from "node:events";
-import { createId, type Command, type EngineEvent } from "@agentloop/core";
+import type { Command, EngineEvent } from "@agentloop/core";
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
 export class EngineWsClient extends EventEmitter {
-  private readonly host: string;
-  private readonly port: number;
+  private host: string;
+  private port: number;
   private ws: WebSocket | null = null;
   private _status: ConnectionStatus = "disconnected";
-  private _sessionId: string | null = null;
 
   constructor(opts: { host: string; port: number }) {
     super();
@@ -16,19 +15,27 @@ export class EngineWsClient extends EventEmitter {
     this.port = opts.port;
   }
 
-  get status(): ConnectionStatus {
-    return this._status;
+  get url(): string {
+    return `ws://${this.host}:${this.port}`;
   }
 
-  get sessionId(): string | null {
-    return this._sessionId;
+  setTarget(opts: { host: string; port: number }): void {
+    const nextUrl = `ws://${opts.host}:${opts.port}`;
+    const currentUrl = this.url;
+    this.host = opts.host;
+    this.port = opts.port;
+    if (currentUrl !== nextUrl) this.emit("targetChanged", { host: this.host, port: this.port });
+  }
+
+  get status(): ConnectionStatus {
+    return this._status;
   }
 
   async connect(): Promise<void> {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this._status = "connecting";
 
-    const ws = new WebSocket(`ws://${this.host}:${this.port}`);
+    const ws = new WebSocket(this.url);
     this.ws = ws;
 
     ws.onmessage = (e) => {
@@ -44,9 +51,6 @@ export class EngineWsClient extends EventEmitter {
       ws.onopen = () => {
         this._status = "connected";
         this.emit("connected");
-        const sessionId = createId();
-        this._sessionId = sessionId;
-        ws.send(JSON.stringify({ type: "session.create", payload: { sessionId } } satisfies Command));
         resolve();
       };
 
@@ -73,7 +77,6 @@ export class EngineWsClient extends EventEmitter {
     } finally {
       this.ws = null;
       this._status = "disconnected";
-      this._sessionId = null;
       this.emit("disconnected");
     }
   }

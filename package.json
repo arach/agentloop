@@ -6,8 +6,10 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "dev": "bun run --filter '*' dev",
+    "agentloop:start": "bun run tui",
     "engine": "bun run --cwd packages/engine start",
     "tui": "bun run --cwd packages/tui start",
+    "doctor": "bun run --cwd packages/tui src/doctor.ts",
     "kokomo": "bun run --cwd packages/kokomo start",
     "kokomo:say": "bun run --cwd packages/kokomo start say",
     "kokomo:say-local": "bun run --cwd packages/kokomo start say-local",

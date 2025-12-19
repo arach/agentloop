@@ -1,6 +1,7 @@
 export async function tryCopyToClipboard(text: string): Promise<boolean> {
   const trimmed = text.trimEnd();
   if (!trimmed) return false;
+  const bytes = new TextEncoder().encode(trimmed);
 
   const platform = process.platform;
   const candidates: { cmd: string[]; input: "stdin" | "arg" }[] =
@@ -32,7 +33,7 @@ export async function tryCopyToClipboard(text: string): Promise<boolean> {
         stderr: "ignore",
       });
       if (proc.stdin) {
-        await proc.stdin.write(trimmed);
+        await proc.stdin.write(bytes);
         await proc.stdin.end();
       }
       const code = await proc.exited;

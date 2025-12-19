@@ -39,3 +39,6 @@ tmp/
 .agentloop/
 external/
 .venv/
+
+# Local assistant configs
+.codex/
