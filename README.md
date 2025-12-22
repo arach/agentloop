@@ -120,6 +120,7 @@ curl http://127.0.0.1:12345/health
 Caching:
 
 - Model weights are downloaded once and cached under `.agentloop/` by default (via `HF_HOME` / `HUGGINGFACE_HUB_CACHE`).
+- For gated models, set `AGENTLOOP_HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) before starting the server to allow the download. If you already ran `huggingface-cli login`, the wrapper will reuse that token.
 
 ## Local VLM (MLX)
 
@@ -146,6 +147,10 @@ Environment variables:
 - `AGENTLOOP_HOST` - Engine host (default: `127.0.0.1`)
 - `AGENTLOOP_PORT` - Engine port (default: `7777`)
 - `AGENTLOOP_ENGINE_STATE_FILE` - Where the managed backend writes its state (default: `.agentloop/run/engine.json`)
+- `AGENTLOOP_HF_TOKEN` - Hugging Face token for gated model downloads (used by MLX/VLM wrappers).
+- `AGENTLOOP_ENV_FILE` - Optional env file (default: `.agentloop/env`) loaded by engine + service wrappers.
+- `AGENTLOOP_THEME` - TUI theme (`forge`, `forge-core`, `noir`).
+- `AGENTLOOP_CONVERSATION_STYLE` - TUI conversation style (`minimal` or `powerline`).
 - `AGENTLOOP_MANAGE_KOKOMO` - If `1`, the engine will auto-start Kokomo on boot (you can also start/stop it from the TUI).
 - `AGENTLOOP_MANAGE_MLX` - If `1`, the engine will auto-start the MLX LLM service on boot.
 - `AGENTLOOP_MANAGE_VLM` - If `1`, the engine will auto-start the MLX VLM service on boot.
@@ -159,6 +164,7 @@ Environment variables:
 - `KOKOMO_HEALTH_URL` - Health URL to poll until ready (defaults to `http://KOKOMO_HOST:KOKOMO_PORT/health` when using defaults).
 - `KOKOMO_READY_TIMEOUT_MS` - Health check timeout (default: `15000`).
 - `MLX_HOST`, `MLX_PORT`, `MLX_MODEL` - MLX LLM wrapper configuration.
+- `AGENTLOOP_MLX_URL_QUICK` - Optional alternate MLX base URL for the quick/inner-loop model.
 - `MLX_CMD`, `MLX_CMD_JSON` - Override engine-managed MLX LLM launch command.
 - `VLM_HOST`, `VLM_PORT`, `VLM_MODEL` - MLX VLM wrapper configuration.
 - `VLM_CMD`, `VLM_CMD_JSON` - Override engine-managed MLX VLM launch command.

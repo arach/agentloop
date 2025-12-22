@@ -8,9 +8,13 @@ import {
   TextareaRenderable,
   createCliRenderer,
 } from "@opentui/core";
+import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   DEFAULT_CONFIG,
+  SERVICE_BY_NAME,
+  SERVICE_NAMES,
+  SERVICE_PORTS,
   createId,
   type Command,
   type EngineEvent,
@@ -32,9 +36,11 @@ import {
 } from "./utils/engineManager.js";
 import { runGit } from "./utils/git.js";
 import { formatCmd, installers, runInstaller, type InstallerId } from "./utils/installers.js";
+import { chatterboxTtsToWavFile } from "./utils/chatterbox.js";
 import { kokomoTtsLocalToWavFile, kokomoTtsToWavFile, tryPlayAudioFile } from "./utils/kokomo.js";
 import { fetchLogoToCache } from "./utils/logos.js";
 import { createLogger } from "./utils/logger.js";
+import { shellTokenize } from "./utils/shellTokens.js";
 import { theme } from "./ui/theme.js";
 import { clampLines, extractCodeBlocks, formatTime, maybeExtractPath } from "./ui/text.js";
 import { renderConversation, type ConversationStatus } from "./ui/conversation.js";
@@ -255,8 +261,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       "",
       "Services (quick start)",
       "  - TTS (kokomo): /install kokomo --yes  →  /service kokomo start  →  /say hello",
+      "  - TTS (chatterbox): /install chatterbox --yes  →  /service chatterbox start  →  /say hello",
       "  - LLM (mlx):    /install mlx --yes     →  /service mlx start     →  chat normally",
-      "  - VLM (vlm):    /install vlm --yes     →  /service vlm start     →  (image chat WIP in TUI)",
+      "  - VLM (vlm):    /install vlm --yes     →  /service vlm start     →  drag/drop image paths into chat",
       "",
       "Repo",
       "  https://github.com/arach/agentloop",
@@ -322,6 +329,95 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     height: 1,
   });
   aboutOverlay.add(aboutFooter);
+
+  // Services sheet (overlay modal)
+  const servicesOverlay = new BoxRenderable(renderer, {
+    id: "servicesOverlay",
+    position: "absolute",
+    top: "12%",
+    left: "12%",
+    width: "76%",
+    height: "70%",
+    zIndex: 120,
+    border: true,
+    borderColor: theme.borderFocused,
+    backgroundColor: theme.panelBg,
+    padding: 2,
+    flexDirection: "column",
+    gap: 1,
+    visible: false,
+  });
+  root.add(servicesOverlay);
+
+  const servicesSheetHeader = new BoxRenderable(renderer, {
+    id: "servicesSheetHeader",
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  });
+  servicesOverlay.add(servicesSheetHeader);
+
+  const servicesSheetTitle = new TextRenderable(renderer, {
+    id: "servicesSheetTitle",
+    fg: theme.fg,
+    wrapMode: "none",
+    selectable: false,
+    content: "Services",
+    height: 1,
+  });
+  servicesSheetHeader.add(servicesSheetTitle);
+
+  const servicesSheetMeta = new TextRenderable(renderer, {
+    id: "servicesSheetMeta",
+    fg: theme.dim,
+    wrapMode: "none",
+    selectable: false,
+    content: "Running + available services",
+    height: 1,
+  });
+  servicesSheetHeader.add(servicesSheetMeta);
+
+  const servicesSheetDivider = new TextRenderable(renderer, {
+    id: "servicesSheetDivider",
+    fg: theme.dim2,
+    wrapMode: "none",
+    selectable: false,
+    content: "────────────────────────────────────────────────────────────────────────────",
+    height: 1,
+  });
+  servicesOverlay.add(servicesSheetDivider);
+
+  const servicesSheetScroll = new ScrollBoxRenderable(renderer, {
+    id: "servicesSheetScroll",
+    flexGrow: 1,
+    scrollY: true,
+    stickyScroll: false,
+    viewportCulling: true,
+    scrollbarOptions: { showArrows: false, trackOptions: { foregroundColor: theme.border, backgroundColor: theme.panelBg } },
+  });
+  servicesOverlay.add(servicesSheetScroll);
+
+  const servicesSheetText = new TextRenderable(renderer, {
+    id: "servicesSheetText",
+    fg: theme.fg,
+    selectable: true,
+    wrapMode: "word",
+    selectionBg: theme.selectionBg,
+    selectionFg: theme.selectionFg,
+    width: "100%",
+  });
+  servicesSheetScroll.add(servicesSheetText);
+
+  const servicesSheetFooter = new TextRenderable(renderer, {
+    id: "servicesSheetFooter",
+    fg: theme.dim,
+    wrapMode: "none",
+    selectable: false,
+    content: "Tab switch • ↑/↓ move • Enter status • s start • x stop • i install • Esc close",
+    height: 1,
+  });
+  servicesOverlay.add(servicesSheetFooter);
 
   // Header
   const header = new BoxRenderable(renderer, {
@@ -441,7 +537,16 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
   servicesSection.add(servicesTitle);
 
-  let activeService: ServiceName = "kokomo";
+  const defaultTtsService: ServiceName =
+    (process.env.AGENTLOOP_TTS_PROVIDER ?? "").toLowerCase() === "chatterbox" ? "chatterbox" : "kokomo";
+  let activeService: ServiceName = defaultTtsService;
+  const serviceNameList = SERVICE_NAMES.join("|");
+  const isServiceName = (value: string): value is ServiceName => SERVICE_NAMES.includes(value as ServiceName);
+  const serviceKindLabel = (kind: "tts" | "llm" | "vlm") => (kind === "tts" ? "TTS" : kind === "llm" ? "LLM" : "VLM");
+  const serviceTabOptions = SERVICE_NAMES.map((name) => {
+    const def = SERVICE_BY_NAME[name];
+    return { name: def.name, description: def.title, value: def.name };
+  });
   const serviceTabs = new TabSelectRenderable(renderer, {
     id: "serviceTabs",
     height: 3,
@@ -455,11 +560,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     focusedTextColor: theme.fg,
     selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
-    options: [
-      { name: "kokomo", description: "Kokomo TTS", value: "kokomo" },
-      { name: "mlx", description: "MLX LLM", value: "mlx" },
-      { name: "vlm", description: "MLX VLM", value: "vlm" },
-    ],
+    options: serviceTabOptions,
   });
   servicesSection.add(serviceTabs);
 
@@ -563,7 +664,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     focusedTextColor: theme.fg,
     selectedBackgroundColor: theme.panelBg2,
     selectedTextColor: theme.fg,
-    options: [{ name: "kokomo", description: "kokomo logs", value: "kokomo" }],
+    options: SERVICE_NAMES.map((name) => ({
+      name,
+      description: `${name} logs`,
+      value: name,
+    })),
   });
   logsSection.add(logsServiceTabs);
 
@@ -710,12 +815,22 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     selectedTextColor: theme.fg,
     options: [
       { name: "/help", description: "Show help", value: "/help" },
-      { name: "install kokomo", description: "Install TTS", value: "/install kokomo --yes" },
-      { name: "install mlx", description: "Install LLM", value: "/install mlx --yes" },
-      { name: "install vlm", description: "Install VLM", value: "/install vlm --yes" },
-      { name: "start kokomo", description: "Start service", value: "/service kokomo start" },
-      { name: "start mlx", description: "Start LLM", value: "/service mlx start" },
-      { name: "start vlm", description: "Start VLM", value: "/service vlm start" },
+      ...SERVICE_NAMES.map((name) => {
+        const def = SERVICE_BY_NAME[name];
+        return {
+          name: `install ${def.name}`,
+          description: `Install ${serviceKindLabel(def.kind)}`,
+          value: def.installCommand,
+        };
+      }),
+      ...SERVICE_NAMES.map((name) => {
+        const def = SERVICE_BY_NAME[name];
+        return {
+          name: `start ${def.name}`,
+          description: `Start ${serviceKindLabel(def.kind)}`,
+          value: def.startCommand,
+        };
+      }),
       { name: "say hello", description: "Speak", value: "/say hello there" },
     ],
   });
@@ -754,7 +869,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     selectionBg: theme.selectionBg,
     selectionFg: theme.selectionFg,
     visible: !commandsCollapsed,
-    content: ["/say <text>", "/service kokomo|mlx|vlm start|stop|status", "/install list", "/help"].join("\n"),
+    content: ["/say <text>", "/services", `/service ${serviceNameList} start|stop|status`, "/install list", "/help"].join("\n"),
   });
   commandsSection.add(commandsText);
 
@@ -830,14 +945,34 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   });
   inputBox.add(textarea);
 
-  const helpBar = new TextRenderable(renderer, {
-    id: "helpBar",
+  const statusBar = new BoxRenderable(renderer, {
+    id: "statusBar",
+    width: "100%",
     height: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingLeft: 2,
+    paddingRight: 2,
+  });
+  footer.add(statusBar);
+
+  const statusLeft = new TextRenderable(renderer, {
+    id: "statusLeft",
     fg: theme.dim,
     wrapMode: "none",
     selectable: false,
+    height: 1,
   });
-  footer.add(helpBar);
+  const statusRight = new TextRenderable(renderer, {
+    id: "statusRight",
+    fg: theme.dim2,
+    wrapMode: "none",
+    selectable: false,
+    height: 1,
+  });
+  statusBar.add(statusLeft);
+  statusBar.add(statusRight);
 
   // Screen visibility defaults
   splashOverlay.visible = true;
@@ -869,13 +1004,20 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let historyIndex: number | null = null;
 
   // Sidebar state
-  let activeLogService: string = "kokomo";
+  let activeLogService: string = defaultTtsService;
   let lastLogTabsKey = "";
   let servicesTabsSynced = false;
   let serviceSelectionAnnounceEnabled = false;
   const recentServiceFeed: string[] = [];
   let lastInstallCheckAt = 0;
-  let installState: Record<ServiceName, boolean> = { kokomo: false, mlx: false, vlm: false };
+  const makeServiceRecord = <T,>(initial: T): Record<ServiceName, T> => {
+    const record = {} as Record<ServiceName, T>;
+    for (const name of SERVICE_NAMES) {
+      record[name] = initial;
+    }
+    return record;
+  };
+  let installState: Record<ServiceName, boolean> = makeServiceRecord(false);
   let autoStartedMlx = false;
   let routingMode: "auto" | "pinned" = "auto";
   let activeAgentName: string | null = null;
@@ -886,6 +1028,19 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let sessionPromptOverride: string | null = null;
   let toast: string | null = null;
   let toastUntil = 0;
+  let showDetails = true;
+  const conversationStyleEnv = (process.env.AGENTLOOP_CONVERSATION_STYLE ?? "").toLowerCase();
+  let conversationStyle: "minimal" | "powerline" =
+    conversationStyleEnv === "powerline" ? "powerline" : "minimal";
+  let servicesSheetOpen = false;
+  let servicesSheetSection: "running" | "available" = "running";
+  let servicesSheetSelection = { running: 0, available: 0 };
+  let servicesSheetRunning: ServiceName[] = [];
+  let servicesSheetAvailable: ServiceName[] = [];
+  let servicesSheetNote: string | null = null;
+  let servicesSheetNoteUntil = 0;
+  const portByService: Record<ServiceName, number> = SERVICE_PORTS;
+  let managedEngineLogLines: string[] = [];
 
   // Auto-copy selection state
   let lastAutoCopyAt = 0;
@@ -922,7 +1077,13 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     addMessage({ id: createId(), role: "system", content, timestamp: Date.now() });
   };
 
-  const getSelectionText = () => renderer.getSelectionContainer()?.getSelectedText?.() ?? "";
+  const getSelectionText = () => {
+    const selection = renderer.getSelection?.();
+    if (selection?.getSelectedText) {
+      return selection.getSelectedText();
+    }
+    return renderer.getSelectionContainer?.()?.getSelectedText?.() ?? "";
+  };
 
   const updateHeader = () => {
     const conn =
@@ -937,7 +1098,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     const err = error ? ` · ${error}` : "";
     const agentLabel = routingMode === "pinned" ? `agent ${activeAgentName ?? "(unset)"}` : "agent auto";
     headerLeft.content = `AgentLoop ${versionTag}`;
-    headerRight.content = `${conn}${err} · ${sStatus} · ${agentLabel} · ws://${engineHost}:${enginePort}`;
+    headerRight.content = showDetails
+      ? `${conn}${err} · ${sStatus} · ${agentLabel} · ws://${engineHost}:${enginePort}`
+      : `${conn}${err} · ${sStatus}`;
   };
 
   const updateConversation = () => {
@@ -946,6 +1109,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       messages,
       sessionStatus,
       streamingContent,
+      style: conversationStyle,
     });
   };
 
@@ -992,30 +1156,32 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       lastInstallCheckAt = now;
       void (async () => {
         const root = enginePaths.repoRoot;
-        const checks: Record<ServiceName, string> = {
-          kokomo: "external/kokomo-mlx/.venv/bin/python",
-          mlx: "external/mlx-llm/.venv/bin/python",
-          vlm: "external/mlx-vlm/.venv/bin/python",
-        };
         const next: Record<ServiceName, boolean> = { ...installState };
-        for (const name of Object.keys(checks) as ServiceName[]) {
+        for (const name of SERVICE_NAMES) {
+          const rel = SERVICE_BY_NAME[name].installCheckPath;
+          if (!rel) {
+            next[name] = false;
+            continue;
+          }
           try {
-            next[name] = await Bun.file(path.join(root, checks[name])).exists();
+            next[name] = await Bun.file(path.join(root, rel)).exists();
           } catch {
             next[name] = false;
           }
         }
         installState = next;
+        updateServicesSheet();
         requestRender();
       })();
     }
 
-    const portByService: Record<ServiceName, number> = { kokomo: 8880, mlx: 12345, vlm: 12346 };
-    servicesMeta.content = `active=${activeService} · actions: start/stop/status · ports: k${portByService.kokomo} m${portByService.mlx} v${portByService.vlm}`;
-    const known: ServiceName[] = ["kokomo", "mlx", "vlm"];
+    servicesMeta.content = `active=${activeService} · actions: start/stop/status · ports: ${SERVICE_NAMES.map(
+      (name) => `${SERVICE_BY_NAME[name].short}${portByService[name]}`
+    ).join(" ")}`;
+    const known: ServiceName[] = [...SERVICE_NAMES];
 
     const svcLines: string[] = [];
-    svcLines.push("name     inst  state        port   detail");
+    svcLines.push("name       inst  state        port   detail");
     for (const name of known) {
       const svc = services[name];
       const status = (svc?.status ?? "unknown").padEnd(10, " ");
@@ -1023,7 +1189,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       const port = String(portByService[name]).padEnd(5, " ");
       const detail = (svc?.detail ?? "").trim();
       const tail = svc?.lastError ? `err: ${svc.lastError}` : svc?.lastExitCode != null ? `exit: ${svc.lastExitCode}` : "";
-      svcLines.push(`${name.padEnd(7, " ")} ${inst} ${status} ${port}  ${(detail || tail || "—").slice(0, 60)}`);
+      svcLines.push(`${name.padEnd(10, " ")} ${inst} ${status} ${port}  ${(detail || tail || "—").slice(0, 60)}`);
     }
 
     const feed = recentServiceFeed.slice(-3);
@@ -1031,8 +1197,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     servicesText.content = svcLines.join("\n") + feedBlock;
 
     if (!servicesTabsSynced) {
-      // Ensure service tab selection starts on kokomo.
-      serviceTabs.setSelectedIndex(activeService === "mlx" ? 1 : 0);
+      // Ensure service tab selection starts on the default service.
+      const idx = known.indexOf(activeService);
+      serviceTabs.setSelectedIndex(idx >= 0 ? idx : 0);
       servicesTabsSynced = true;
       serviceSelectionAnnounceEnabled = true;
     }
@@ -1042,7 +1209,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       new Set<string>([
         ...Object.keys(services),
         ...Object.keys(serviceLogs),
-        "kokomo",
+        ...SERVICE_NAMES,
       ].filter(Boolean))
     ).sort();
 
@@ -1063,15 +1230,137 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     logsText.content = logs.join("\n");
   };
 
-  const updateHelp = () => {
-    const base =
-      "Enter send · Shift+Enter newline · Tab focus · ↑/↓ history · Ctrl/Cmd+C copy selection · ^Y copy last · ^A about · ^N new · ^R reconnect/start backend · ^C quit";
-    if (toast && Date.now() < toastUntil) {
-      helpBar.content = `${toast}  —  ${base}`;
-      return;
+  const ensureServicesSheetSelectionVisible = (line: number | null) => {
+    if (!servicesSheetOpen || line == null) return;
+    const viewportHeight = servicesSheetScroll.viewport.height || servicesSheetScroll.height || 0;
+    if (viewportHeight <= 0) return;
+    const top = servicesSheetScroll.scrollTop;
+    const bottom = top + viewportHeight - 1;
+    if (line < top) servicesSheetScroll.scrollTop = line;
+    if (line > bottom) servicesSheetScroll.scrollTop = Math.max(0, line - viewportHeight + 1);
+  };
+
+  const updateServicesSheet = () => {
+    if (!servicesSheetOpen) return;
+    if (servicesSheetNote && Date.now() > servicesSheetNoteUntil) {
+      servicesSheetNote = null;
     }
-    toast = null;
-    helpBar.content = base;
+    servicesSheetMeta.content = servicesSheetNote
+      ? `Running + available services · ${servicesSheetNote}`
+      : "Running + available services";
+    const known: ServiceName[] = [...SERVICE_NAMES];
+    const running = known.filter((name) => services[name]?.status === "running");
+    const available = known.filter((name) => services[name]?.status !== "running");
+    servicesSheetRunning = running;
+    servicesSheetAvailable = available;
+    const clampIndex = (idx: number, len: number) => (len <= 0 ? 0 : Math.max(0, Math.min(idx, len - 1)));
+    servicesSheetSelection = {
+      running: clampIndex(servicesSheetSelection.running, running.length),
+      available: clampIndex(servicesSheetSelection.available, available.length),
+    };
+    if (servicesSheetSection === "running" && running.length === 0 && available.length > 0) {
+      servicesSheetSection = "available";
+    } else if (servicesSheetSection === "available" && available.length === 0 && running.length > 0) {
+      servicesSheetSection = "running";
+    }
+    const lines: string[] = [];
+    let lineIndex = 0;
+    let selectedLine: number | null = null;
+
+    lines.push(`Running${servicesSheetSection === "running" ? " •" : ""}`);
+    lineIndex += 1;
+    if (running.length === 0) {
+      lines.push("  (none)");
+      lineIndex += 1;
+    } else {
+      running.forEach((name, idx) => {
+        const svc = services[name];
+        const selected = servicesSheetSection === "running" && idx === servicesSheetSelection.running;
+        const prefix = selected ? "›" : " ";
+        lines.push(`${prefix} ${name} · port ${portByService[name]} · ${svc?.detail ?? "Running"}`);
+        if (selected) selectedLine = lineIndex;
+        lineIndex += 1;
+      });
+    }
+    lines.push("");
+    lineIndex += 1;
+    lines.push(`Available${servicesSheetSection === "available" ? " •" : ""}`);
+    lineIndex += 1;
+    if (available.length === 0) {
+      lines.push("  (none)");
+      lineIndex += 1;
+    } else {
+      lines.push("  name   installed  state      port   detail");
+      lineIndex += 1;
+      available.forEach((name, idx) => {
+        const svc = services[name];
+        const inst = installState[name] ? "yes" : "no ";
+        const status = (svc?.status ?? "stopped").padEnd(9, " ");
+        const detail = svc?.detail ?? (svc?.lastError ? `err: ${svc.lastError}` : "—");
+        const selected = servicesSheetSection === "available" && idx === servicesSheetSelection.available;
+        const prefix = selected ? "›" : " ";
+        lines.push(`${prefix} ${name.padEnd(6, " ")} ${inst.padEnd(9, " ")} ${status} ${String(portByService[name]).padEnd(5, " ")} ${detail}`);
+        if (selected) selectedLine = lineIndex;
+        lineIndex += 1;
+      });
+    }
+
+    servicesSheetText.content = lines.join("\n");
+    ensureServicesSheetSelectionVisible(selectedLine);
+  };
+
+  const moveServicesSheetSelection = (delta: number) => {
+    const currentItems = servicesSheetSection === "running" ? servicesSheetRunning : servicesSheetAvailable;
+    if (currentItems.length === 0) {
+      const otherSection = servicesSheetSection === "running" ? "available" : "running";
+      const otherItems = otherSection === "running" ? servicesSheetRunning : servicesSheetAvailable;
+      if (otherItems.length === 0) return;
+      servicesSheetSection = otherSection;
+    }
+
+    const items = servicesSheetSection === "running" ? servicesSheetRunning : servicesSheetAvailable;
+    if (items.length === 0) return;
+    const key = servicesSheetSection;
+    const next = Math.max(0, Math.min(servicesSheetSelection[key] + delta, items.length - 1));
+    if (next === servicesSheetSelection[key]) return;
+    servicesSheetSelection = { ...servicesSheetSelection, [key]: next };
+    updateServicesSheet();
+    requestRender();
+  };
+
+  const toggleServicesSheetSection = () => {
+    const nextSection = servicesSheetSection === "running" ? "available" : "running";
+    const nextItems = nextSection === "running" ? servicesSheetRunning : servicesSheetAvailable;
+    if (nextItems.length === 0) return;
+    servicesSheetSection = nextSection;
+    updateServicesSheet();
+    requestRender();
+  };
+
+  const getServicesSheetSelectedService = (): ServiceName | null => {
+    const items = servicesSheetSection === "running" ? servicesSheetRunning : servicesSheetAvailable;
+    if (items.length === 0) return null;
+    const idx = servicesSheetSection === "running" ? servicesSheetSelection.running : servicesSheetSelection.available;
+    return items[idx] ?? null;
+  };
+
+  const updateHelp = () => {
+    const conn =
+      connectionStatus === "connected"
+        ? "connected"
+        : connectionStatus === "connecting"
+          ? "connecting"
+          : connectionStatus === "error"
+            ? "error"
+            : "disconnected";
+    const agentLabel = routingMode === "pinned" ? `agent ${activeAgentName ?? "(unset)"}` : "agent auto";
+    const baseRight = "^D details · /help";
+    const hasToast = toast && Date.now() < toastUntil;
+
+    statusLeft.content = `${conn} · ${sessionStatus} · ${agentLabel}`;
+    statusRight.content = hasToast ? String(toast) : baseRight;
+
+    if (!hasToast) toast = null;
   };
 
   const updateAll = () => {
@@ -1079,6 +1368,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     updateConversation();
     updateInspector();
     updateSidebar();
+    updateServicesSheet();
     updateHelp();
     composerHeader.content =
       sessionStatus === "thinking" || sessionStatus === "streaming" || sessionStatus === "tool_use"
@@ -1090,11 +1380,28 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const applyScreenVisibility = () => {
     const isSplash = screen === "splash";
+    const detailsVisible = !isSplash && showDetails;
     splashOverlay.visible = isSplash;
-    header.visible = !isSplash;
+    header.visible = detailsVisible;
     mainRow.visible = !isSplash;
     footer.visible = !isSplash;
+    footer.height = detailsVisible ? 6 : 5;
+    statusBar.visible = detailsVisible;
+    sidebar.visible = detailsVisible;
+    servicesSection.visible = detailsVisible;
+    sidebarScroll.visible = detailsVisible;
+    logsSection.visible = detailsVisible;
+    logsServiceTabs.visible = detailsVisible && !logsCollapsed;
+    logsScroll.visible = detailsVisible && !logsCollapsed;
+    inspectorSection.visible = detailsVisible;
+    inspectorScroll.visible = detailsVisible;
+    actionsSection.visible = detailsVisible;
+    actionTabs.visible = detailsVisible;
+    presetsSection.visible = detailsVisible;
+    presetsTabs.visible = detailsVisible && !presetsCollapsed;
+    commandsSection.visible = detailsVisible;
     aboutOverlay.visible = aboutOpen && !isSplash;
+    servicesOverlay.visible = servicesSheetOpen && !isSplash;
   };
 
   const setScreen = (next: Screen) => {
@@ -1110,6 +1417,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 
   const setAboutOpen = (next: boolean) => {
     aboutOpen = next;
+    if (aboutOpen) servicesSheetOpen = false;
     applyScreenVisibility();
     if (aboutOpen) {
       renderer.focusRenderable(aboutScroll);
@@ -1119,6 +1427,34 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       textarea.focus();
     }
     requestRender();
+  };
+
+  const setServicesSheetOpen = (next: boolean) => {
+    servicesSheetOpen = next;
+    if (servicesSheetOpen) aboutOpen = false;
+    updateServicesSheet();
+    applyScreenVisibility();
+    if (servicesSheetOpen) {
+      renderer.focusRenderable(servicesSheetScroll);
+      servicesSheetScroll.focus();
+    } else if (screen === "main") {
+      renderer.focusRenderable(textarea);
+      textarea.focus();
+    }
+    requestRender();
+  };
+
+  const setServicesSheetNote = (note: string, ms = 2200) => {
+    servicesSheetNote = note;
+    servicesSheetNoteUntil = Date.now() + ms;
+    updateServicesSheet();
+    requestRender();
+    setTimeout(() => {
+      if (Date.now() < servicesSheetNoteUntil) return;
+      servicesSheetNote = null;
+      updateServicesSheet();
+      requestRender();
+    }, ms);
   };
 
   applyScreenVisibility();
@@ -1181,6 +1517,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
 	          addSystemMessage(["Welcome to AgentLoop.", "Type a message to chat, or run /help to see commands.", "Quick start: /install list"].join("\n"));
 	        }
 	        engine.send({ type: "service.status", payload: { name: "kokomo" } } as Command);
+	        engine.send({ type: "service.status", payload: { name: "chatterbox" } } as Command);
 	        engine.send({ type: "service.status", payload: { name: "mlx" } } as Command);
 	        engine.send({ type: "service.status", payload: { name: "vlm" } } as Command);
 	
@@ -1248,6 +1585,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         stateFile: enginePaths.stateFile,
         host: preferredHost,
       });
+      attachManagedEngineLogs(managedEngineProc);
+      attachManagedEngineExit(managedEngineProc);
       try {
         (managedEngineProc as any)?.unref?.();
       } catch {
@@ -1258,7 +1597,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       if (!nextState) {
         connectionStatus = "error";
         error = "Engine did not become ready";
-        addSystemMessage(`[runtime] failed to start (no state file written): ${enginePaths.stateFile}`, { silent: true });
+        const tail = managedEngineLogLines.slice(-6).join("\n");
+        const detail = tail ? `\n\nLast engine output:\n${tail}` : "";
+        addSystemMessage(`[runtime] failed to start (no state file written): ${enginePaths.stateFile}${detail}`);
         updateAll();
         return;
       }
@@ -1293,6 +1634,57 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     engine.send(command);
   };
 
+  const appendManagedEngineLog = (line: string, stream: "stdout" | "stderr") => {
+    const entry = `[engine ${stream}] ${line}`;
+    managedEngineLogLines = [...managedEngineLogLines, entry].slice(-200);
+    if (stream === "stderr") log.error(entry);
+    else log.info(entry);
+  };
+
+  const attachManagedEngineLogs = (proc: ReturnType<typeof spawnManagedEngine> | null) => {
+    if (!proc?.stdout && !proc?.stderr) return;
+    const pump = async (stream: any, label: "stdout" | "stderr") => {
+      if (!stream) return;
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        buffer += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trimEnd();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          appendManagedEngineLog(line, label);
+        }
+      }
+      if (buffer.trim()) appendManagedEngineLog(buffer.trim(), label);
+    };
+    void pump(proc.stdout as any, "stdout");
+    void pump(proc.stderr as any, "stderr");
+  };
+
+  const attachManagedEngineExit = (proc: ReturnType<typeof spawnManagedEngine> | null) => {
+    if (!proc) return;
+    const exited = (proc as any).exited as Promise<number> | undefined;
+    if (!exited) return;
+    void exited
+      .then((code) => {
+        const msg = `[runtime] managed backend exited (code ${code})`;
+        log.error(msg);
+        addSystemMessage(msg);
+        if (connectionStatus === "connecting") {
+          connectionStatus = "error";
+          error = `Engine exited (${code})`;
+          updateAll();
+        }
+      })
+      .catch(() => {});
+  };
+
   const newSession = () => {
     messages = [];
     streamingContent = "";
@@ -1309,16 +1701,18 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     }
   };
 
-  const sendMessage = (content: string) => {
+  const sendMessage = (content: string, opts?: { images?: string[]; displayContent?: string }) => {
     if (!ensureEngineConnected({ quiet: true })) {
       addSystemMessage("Tip: press ^R to reconnect/start backend.");
       return;
     }
-    log.data("user message", { content, length: content.length });
+    const images = opts?.images ?? [];
+    const displayContent = opts?.displayContent ?? content;
+    log.data("user message", { content, length: content.length, images });
     pendingPerf = { startedAt: Date.now(), contentLength: content.length, tokens: 0 };
-    const userMessage: Message = { id: createId(), role: "user", content, timestamp: Date.now() };
+    const userMessage: Message = { id: createId(), role: "user", content: displayContent, timestamp: Date.now() };
     messages = [...messages, userMessage];
-    send({ type: "session.send", payload: { sessionId, content } });
+    send({ type: "session.send", payload: { sessionId, content, images: images.length ? images : undefined } });
     requestRender();
   };
 
@@ -1328,6 +1722,61 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return false;
     }
     return true;
+  };
+
+  const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+  const resolveImageToken = (token: string): { absPath: string; displayPath: string } | null => {
+    if (!token) return null;
+    let cleaned = token.trim();
+    cleaned = cleaned.replace(/[),.;]+$/, "");
+    if (!cleaned) return null;
+    if (cleaned.startsWith("file://")) cleaned = cleaned.slice("file://".length);
+    if (cleaned.startsWith("~/")) {
+      const home = process.env.HOME ?? "";
+      cleaned = home ? path.join(home, cleaned.slice(2)) : cleaned;
+    }
+    const ext = path.extname(cleaned).toLowerCase();
+    if (!imageExtensions.has(ext)) return null;
+    const absPath = path.isAbsolute(cleaned) ? cleaned : path.resolve(enginePaths.repoRoot, cleaned);
+    try {
+      if (!existsSync(absPath)) return null;
+      if (!statSync(absPath).isFile()) return null;
+    } catch {
+      return null;
+    }
+    const rel = path.relative(enginePaths.repoRoot, absPath);
+    const displayPath = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : absPath;
+    return { absPath, displayPath };
+  };
+  const extractImageAttachments = (raw: string): { text: string; images: string[]; displayLines: string[] } => {
+    const tokens = shellTokenize(raw);
+    if (!tokens.length) return { text: raw.trim(), images: [], displayLines: [] };
+    const images: string[] = [];
+    const displayLines: string[] = [];
+    const ranges: Array<[number, number]> = [];
+    const seen = new Set<string>();
+    for (const token of tokens) {
+      const match = resolveImageToken(token.value);
+      if (!match) continue;
+      if (!seen.has(match.absPath)) {
+        seen.add(match.absPath);
+        images.push(match.absPath);
+        displayLines.push(`[image] ${match.displayPath}`);
+      }
+      ranges.push([token.start, token.end]);
+    }
+    if (!images.length) return { text: raw.trim(), images: [], displayLines: [] };
+    const sorted = ranges.sort((a, b) => a[0] - b[0]);
+    let merged = "";
+    let cursor = 0;
+    for (const [start, end] of sorted) {
+      if (start < cursor) continue;
+      merged += raw.slice(cursor, start);
+      cursor = end;
+    }
+    merged += raw.slice(cursor);
+    const text = merged.replace(/[ \t]{2,}/g, " ").trim();
+    return { text, images, displayLines };
   };
 
   const insertIntoComposer = (text: string) => {
@@ -1341,18 +1790,19 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const copyText = async (text: string, label: string) => {
     const trimmed = text.trimEnd();
     if (!trimmed) {
-      addSystemMessage(`Nothing to copy (${label}).`);
+      setToast(`copy: nothing (${label})`);
       return;
     }
-    addSystemMessage(`Copying: ${label}…`);
+    setToast(`copy: ${label}…`);
     const ok = await tryCopyToClipboard(trimmed);
-    addSystemMessage(ok ? "Copied." : "Copy failed (clipboard tool not found). On macOS, ensure `pbcopy` is available.");
+    setToast(ok ? "copied" : "copy failed");
+    if (!ok) log.error(`[copy] failed (${label})`);
   };
 
   const copySelection = async () => {
     const selected = getSelectionText();
     if (!selected.trim()) {
-      addSystemMessage("Nothing selected. Drag to select text, then use Cmd/Ctrl+C (or Quick Actions → copy sel).");
+      setToast("copy: nothing selected");
       return;
     }
     await copyText(selected, "selection");
@@ -1386,6 +1836,9 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       kokama: "kokomo",
       koko: "kokomo",
       kokomo1: "kokomo",
+      chatter: "chatterbox",
+      cb: "chatterbox",
+      tts: "kokomo",
       m: "mlx",
       llm: "mlx",
       local: "mlx",
@@ -1394,6 +1847,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     };
     if (aliases[n]) return aliases[n];
     if (n.startsWith("koko")) return "kokomo";
+    if (n.startsWith("chat") || n.startsWith("chatter")) return "chatterbox";
     return null;
   };
 
@@ -1438,20 +1892,25 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     requestRender();
   };
 
-  const ensureKokomoRunning = async (): Promise<boolean> => {
+  const getTtsProvider = (): "kokomo" | "chatterbox" => {
+    const raw = (process.env.AGENTLOOP_TTS_PROVIDER ?? "kokomo").toLowerCase();
+    return raw === "chatterbox" ? "chatterbox" : "kokomo";
+  };
+
+  const ensureTtsRunning = async (name: "kokomo" | "chatterbox"): Promise<boolean> => {
     if (!ensureEngineConnected()) return false;
-    const current = services["kokomo"];
+    const current = services[name];
     if (current?.status === "running") return true;
-    addSystemMessage("[say] starting kokomo…", { silent: true });
-    send({ type: "service.start", payload: { name: "kokomo" } });
+    addSystemMessage(`[say] starting ${name}…`, { silent: true });
+    send({ type: "service.start", payload: { name } });
 
     const start = Date.now();
-    while (Date.now() - start < 15_000) {
-      const s = services["kokomo"];
+    while (Date.now() - start < 20_000) {
+      const s = services[name];
       if (s?.status === "running") return true;
       if (s?.status === "error") return false;
       if (s?.status === "stopped" && s.lastError) return false;
-      requestServiceStatus("kokomo");
+      requestServiceStatus(name);
       await Bun.sleep(250);
     }
     return false;
@@ -1473,16 +1932,18 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         "  /prompt set <text>",
         "  /prompt clear",
         "  /say <text>",
+        "  /services [open|close]",
         "  /install list",
-        "  /install kokomo|mlx [--yes]",
+        "  /install kokomo|chatterbox|mlx [--yes]",
         "  /install vlm [--yes]",
         "  /install mlx-model <modelId> [--yes]",
         "  /copy last",
         "  /copy <text>",
         "  /commit <message> [--yes] [--all] [--amend]",
-        "  /service kokomo|mlx|vlm start|stop|status",
+        `  /service ${serviceNameList} start|stop|status`,
         "  /runtime start|stop|restart|status   (managed backend)",
         "  /kokomo start|stop|status",
+        "  /chatterbox start|stop|status",
         "  /mlx start|stop|status",
         "  /vlm start|stop|status",
         "  /logo <domain>  (download logo PNG to cache)",
@@ -1490,12 +1951,35 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         "Tips:",
         "  /install runs local commands only when you pass --yes.",
         "  /commit will not run unless you pass --yes.",
-        "  If /say fails, run: /install kokomo --yes",
+        "  Drag a PNG/JPG/WebP into the input to attach it (requires VLM).",
+        "  Theme: set AGENTLOOP_THEME=forge|forge-core|noir before launch.",
+        "  Chat style: set AGENTLOOP_CONVERSATION_STYLE=powerline.",
+        "  Fast mode: AGENTLOOP_MLX_MODEL_QUICK + AGENTLOOP_MLX_MAX_TOKENS_QUICK.",
+        "  Quick server: set AGENTLOOP_MLX_URL_QUICK to target a separate MLX instance.",
+        "  Disable follow-up: AGENTLOOP_QUICK_FOLLOWUP=0.",
+        "  Gated models: set AGENTLOOP_HF_TOKEN before starting MLX.",
+        "  Local env file: .agentloop/env (or AGENTLOOP_ENV_FILE).",
+        "  If /say fails, run: /install kokomo --yes (or /install chatterbox --yes)",
         "  If chat says no LLM, run: /install mlx --yes  →  /service mlx start",
       ].join("\n");
 
     if (!cmd || cmd === "help") {
       addSystemMessage(helpText);
+      return;
+    }
+
+    if (cmd === "services") {
+      const sub = (parts[1] ?? "toggle").toLowerCase();
+      if (sub === "open" || sub === "show" || sub === "toggle") {
+        const next = sub === "toggle" ? !servicesSheetOpen : true;
+        setServicesSheetOpen(next);
+        return;
+      }
+      if (sub === "close" || sub === "hide") {
+        setServicesSheetOpen(false);
+        return;
+      }
+      addSystemMessage("Usage: /services [open|close]");
       return;
     }
 
@@ -1566,22 +2050,46 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return;
     }
 
+    if (cmd === "theme") {
+      const sub = (parts[1] ?? "show").toLowerCase();
+      if (sub === "show") {
+        addSystemMessage(`Conversation theme: ${conversationStyle}`);
+        return;
+      }
+      if (sub === "conversation" || sub === "chat") {
+        const style = (parts[2] ?? "").toLowerCase();
+        if (style !== "minimal" && style !== "powerline") {
+          addSystemMessage("Usage: /theme conversation minimal|powerline");
+          return;
+        }
+        conversationStyle = style;
+        setToast(`theme: ${style}`);
+        requestRender();
+        return;
+      }
+      addSystemMessage("Usage: /theme show | /theme conversation minimal|powerline");
+      return;
+    }
+
     if (cmd === "install") {
       const sub = (parts[1] ?? "").toLowerCase();
       const yes = parts.includes("--yes") || parts.includes("-y");
       const argRest = parts.slice(2).filter((p) => p !== "--yes" && p !== "-y");
 
       const showList = () => {
+        const serviceLines = SERVICE_NAMES.map((name) => {
+          const def = SERVICE_BY_NAME[name];
+          return `  ${def.name.padEnd(10, " ")} - ${def.summary}`;
+        });
         addSystemMessage(
           [
             "Install targets:",
-            "  kokomo     - local TTS (mlx-audio[tts])",
-            "  mlx        - MLX LLM tooling (mlx-lm)",
-            "  vlm        - MLX VLM tooling (mlx-vlm)",
+            ...serviceLines,
             "  mlx-model  - prefetch an MLX model",
             "",
             "Examples:",
             "  /install kokomo --yes",
+            "  /install chatterbox --yes",
             "  /install mlx --yes",
             "  /install vlm --yes",
             "  /install mlx-model mlx-community/Llama-3.2-3B-Instruct-4bit --yes",
@@ -1775,7 +2283,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       const nameRaw = isAction(a1) ? parts[2] ?? "" : parts[1] ?? "";
       const name = normalizeServiceName(nameRaw) ?? (isAction(a1) ? activeService : null);
       if (!name) {
-        addSystemMessage(`Usage: /service kokomo|mlx|vlm start|stop|status`);
+        addSystemMessage(`Usage: /service ${serviceNameList} start|stop|status`);
         return;
       }
       if (action === "start") return startService(name);
@@ -1793,6 +2301,14 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       if (action === "start") return startService("kokomo");
       if (action === "stop") return stopService("kokomo");
       requestServiceStatus("kokomo");
+      return;
+    }
+
+    if (cmd === "chatterbox" || cmd === "cb") {
+      const action = (parts[1] ?? "status").toLowerCase();
+      if (action === "start") return startService("chatterbox");
+      if (action === "stop") return stopService("chatterbox");
+      requestServiceStatus("chatterbox");
       return;
     }
 
@@ -1867,16 +2383,27 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
           let filePath: string;
           let bytes: number;
 
-          const ready = await ensureKokomoRunning();
-          if (ready) {
-            addSystemMessage("[say] calling kokomo /tts…");
-            ({ filePath, bytes } = await kokomoTtsToWavFile(text));
+          const provider = getTtsProvider();
+          if (provider === "kokomo") {
+            const ready = await ensureTtsRunning("kokomo");
+            if (ready) {
+              addSystemMessage("[say] calling kokomo /tts…");
+              ({ filePath, bytes } = await kokomoTtsToWavFile(text));
+            } else {
+              const state = services["kokomo"];
+              addSystemMessage(
+                `[say] kokomo not running; using local mlx-audio…${state?.lastError ? ` (${state.lastError})` : ""}`
+              );
+              ({ filePath, bytes } = await kokomoTtsLocalToWavFile(text));
+            }
           } else {
-            const state = services["kokomo"];
-            addSystemMessage(
-              `[say] kokomo not running; using local mlx-audio…${state?.lastError ? ` (${state.lastError})` : ""}`
-            );
-            ({ filePath, bytes } = await kokomoTtsLocalToWavFile(text));
+            const ready = await ensureTtsRunning("chatterbox");
+            if (!ready) {
+              const state = services["chatterbox"];
+              throw new Error(state?.lastError ?? "chatterbox not running");
+            }
+            addSystemMessage("[say] calling chatterbox /tts…");
+            ({ filePath, bytes } = await chatterboxTtsToWavFile(text));
           }
 
           addSystemMessage(`[say] saved wav (${bytes} bytes): ${filePath}`);
@@ -1888,8 +2415,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           addSystemMessage(`[say] failed: ${msg}`);
-          if (msg.toLowerCase().includes("run `bun run kokomo:install")) {
+          if (msg.toLowerCase().includes("kokomo")) {
             addSystemMessage("Tip: /install kokomo --yes");
+          } else if (msg.toLowerCase().includes("chatterbox")) {
+            addSystemMessage("Tip: /install chatterbox --yes");
           }
         }
       })();
@@ -1901,18 +2430,18 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const submitInput = () => {
-    const value = textarea.plainText.trimEnd();
+    const raw = textarea.plainText.trimEnd();
     textarea.setText("");
     textarea.cursorOffset = 0;
     historyIndex = null;
-    if (!value.trim()) return;
+    if (!raw.trim()) return;
 
     // History should store what the user typed (commands + messages).
-    history.push(value);
+    history.push(raw);
     if (history.length > 200) history.splice(0, history.length - 200);
 
-    if (value.trimStart().startsWith("/")) {
-      runSlashCommand(value);
+    if (raw.trimStart().startsWith("/")) {
+      runSlashCommand(raw);
       return;
     }
 
@@ -1921,7 +2450,10 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return;
     }
 
-    sendMessage(value);
+    const { text, images, displayLines } = extractImageAttachments(raw);
+    if (!text && images.length === 0) return;
+    const displayContent = [text, ...displayLines].filter(Boolean).join("\n");
+    sendMessage(text, { images, displayContent });
   };
 
   textarea.onSubmit = submitInput;
@@ -1937,7 +2469,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   serviceTabs.on(TabSelectRenderableEvents.SELECTION_CHANGED, () => {
     const opt = serviceTabs.getSelectedOption();
     const name = String(opt?.value ?? opt?.name ?? "").trim();
-    if (name === "kokomo" || name === "mlx" || name === "vlm") {
+    if (isServiceName(name)) {
       activeService = name;
       requestServiceStatus(name);
       if (serviceSelectionAnnounceEnabled) setToast(`active service: ${name}`);
@@ -2001,24 +2533,87 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       return;
     }
 
-    // Copy selection (conversation/sidebar/composer)
-    if ((key.ctrl || key.meta || key.super) && key.name === "c") {
-      if (renderer.hasSelection) {
+    // Services sheet
+    if (servicesSheetOpen) {
+      if (key.name === "escape") {
         key.preventDefault();
-        const selected = getSelectionText().trimEnd();
-        if (selected.trim()) {
-          void (async () => {
-            const ok = await tryCopyToClipboard(selected);
-            if (ok) {
-              addSystemMessage(`[copy] copied selection (${selected.length} chars)`);
-              requestRender();
-            } else {
-              addSystemMessage("[copy] failed (clipboard tool not found)");
-            }
-          })();
+        setServicesSheetOpen(false);
+      }
+      if (key.name === "tab") {
+        key.preventDefault();
+        toggleServicesSheetSection();
+      }
+      if (key.name === "up") {
+        key.preventDefault();
+        moveServicesSheetSelection(-1);
+      }
+      if (key.name === "down") {
+        key.preventDefault();
+        moveServicesSheetSelection(1);
+      }
+      if (key.name === "return" || key.name === "linefeed" || key.name === "enter") {
+        key.preventDefault();
+        const selected = getServicesSheetSelectedService();
+        if (!selected) return;
+        activeService = selected;
+        activeLogService = selected;
+        logsCollapsed = false;
+        logsServiceTabs.visible = true;
+        logsScroll.visible = true;
+        requestServiceStatus(selected);
+        updateSidebar();
+        setServicesSheetNote(`status requested: ${selected}`);
+      }
+      if (key.name === "s") {
+        key.preventDefault();
+        const selected = getServicesSheetSelectedService();
+        if (!selected) return;
+        if (!installState[selected]) {
+          addSystemMessage(`Service "${selected}" not installed. Run: /install ${selected} --yes`);
           return;
         }
+        startService(selected);
+        updateServicesSheet();
       }
+      if (key.name === "x") {
+        key.preventDefault();
+        const selected = getServicesSheetSelectedService();
+        if (!selected) return;
+        stopService(selected);
+        updateServicesSheet();
+      }
+      if (key.name === "i") {
+        key.preventDefault();
+        const selected = getServicesSheetSelectedService();
+        if (!selected) return;
+        if (installState[selected]) {
+          setToast(`service: ${selected} already installed`);
+          return;
+        }
+        runSlashCommand(`/install ${selected} --yes`);
+      }
+      return;
+    }
+
+    // Copy selection (conversation/sidebar/composer)
+    if ((key.ctrl || key.meta || key.super) && key.name === "c") {
+      const selected = getSelectionText().trimEnd();
+      if (selected.trim()) {
+        key.preventDefault();
+        void copyText(selected, "selection");
+        return;
+      }
+    }
+
+    // Toggle details (header + footer help)
+    if (key.ctrl && key.name === "d") {
+      key.preventDefault();
+      showDetails = !showDetails;
+      setToast(showDetails ? "details: on" : "details: off");
+      applyScreenVisibility();
+      updateAll();
+      requestRender();
+      return;
     }
 
     // Quit (only when not copying a selection)
@@ -2181,6 +2776,13 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         break;
       case "tool.result":
         log.data("tool result", { toolId: event.toolId, result: event.result });
+        break;
+      case "perf.metric":
+        log.data("perf.metric", event);
+        if ((event.name === "llm.total" || event.name === "agent.total") && (!toast || Date.now() > toastUntil)) {
+          const label = event.name.replace(".", " ");
+          setToast(`perf ${label}: ${Math.round(event.durationMs)}ms`);
+        }
         break;
       case "service.status":
         services = { ...services, [event.service.name]: event.service };

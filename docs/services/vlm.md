@@ -34,4 +34,7 @@ The wrapper supports OpenAI-style content blocks in a user message, including `i
 - `VLM_HOST`, `VLM_PORT`, `VLM_MODEL`
 - `VLM_CMD` / `VLM_CMD_JSON` (override engine launch command)
 - `AGENTLOOP_MANAGE_VLM=1` (auto-start on engine boot)
+- `AGENTLOOP_HF_TOKEN` (for gated model downloads via Hugging Face)
+- `AGENTLOOP_ENV_FILE` (optional env file path, default `.agentloop/env`)
 
+If you already ran `huggingface-cli login`, the wrapper will reuse that token automatically.

@@ -1,4 +1,4 @@
-import type { ServiceName, ServiceState } from "@agentloop/core";
+import { SERVICE_BY_NAME, type ServiceName, type ServiceState } from "@agentloop/core";
 import { ManagedProcess } from "./ManagedProcess.js";
 import { shellSplit } from "./shellSplit.js";
 import { existsSync } from "node:fs";
@@ -12,6 +12,13 @@ type ServiceEvent =
 type Listener = (event: ServiceEvent) => void;
 
 type KokomoConfig = {
+  cmd: string[];
+  healthUrl?: string;
+  readyTimeoutMs: number;
+  autoStart: boolean;
+};
+
+type ChatterboxConfig = {
   cmd: string[];
   healthUrl?: string;
   readyTimeoutMs: number;
@@ -74,15 +81,46 @@ function kokomoConfigFromEnv(): KokomoConfig {
   const shouldUseWrapper = cmd.length === 0 && (useDefaults || canUseWrapper);
   if (shouldUseWrapper) cmd = ["bash", scriptPath];
 
+  const defaults = SERVICE_BY_NAME.kokomo;
+  const host = process.env.KOKOMO_HOST ?? defaults.defaultHost;
+  const port = process.env.KOKOMO_PORT ?? String(defaults.defaultPort);
   return {
     cmd,
-    healthUrl:
-      process.env.KOKOMO_HEALTH_URL ??
-      (cmd.length > 0
-        ? `http://${process.env.KOKOMO_HOST ?? "127.0.0.1"}:${process.env.KOKOMO_PORT ?? "8880"}/health`
-        : undefined),
+    healthUrl: process.env.KOKOMO_HEALTH_URL ?? (cmd.length > 0 ? `http://${host}:${port}/health` : undefined),
     readyTimeoutMs: envNumber("KOKOMO_READY_TIMEOUT_MS", 15_000),
     autoStart: envBool("AGENTLOOP_MANAGE_KOKOMO", false),
+  };
+}
+
+function chatterboxConfigFromEnv(): ChatterboxConfig {
+  const cmdJson = process.env.CHATTERBOX_CMD_JSON;
+  const cmdStr = process.env.CHATTERBOX_CMD;
+
+  let cmd: string[] = [];
+  if (cmdJson) {
+    const parsed = JSON.parse(cmdJson);
+    if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
+      throw new Error("CHATTERBOX_CMD_JSON must be a JSON array of strings.");
+    }
+    cmd = parsed;
+  } else if (cmdStr) {
+    cmd = shellSplit(cmdStr);
+  }
+
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
+  const scriptPath = path.join(repoRoot, "scripts/services/chatterbox/run-server.sh");
+  const venvPython = path.join(repoRoot, "external/chatterbox-tts/.venv/bin/python");
+  const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
+  if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
+
+  const defaults = SERVICE_BY_NAME.chatterbox;
+  const host = process.env.CHATTERBOX_HOST ?? defaults.defaultHost;
+  const port = process.env.CHATTERBOX_PORT ?? String(defaults.defaultPort);
+  return {
+    cmd,
+    healthUrl: process.env.CHATTERBOX_HEALTH_URL ?? (cmd.length > 0 ? `http://${host}:${port}/health` : undefined),
+    readyTimeoutMs: envNumber("CHATTERBOX_READY_TIMEOUT_MS", 30_000),
+    autoStart: envBool("AGENTLOOP_MANAGE_CHATTERBOX", false),
   };
 }
 
@@ -110,8 +148,9 @@ function mlxConfigFromEnv(): MlxConfig {
   const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
   if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
 
-  const host = process.env.MLX_HOST ?? "127.0.0.1";
-  const port = process.env.MLX_PORT ?? "12345";
+  const defaults = SERVICE_BY_NAME.mlx;
+  const host = process.env.MLX_HOST ?? defaults.defaultHost;
+  const port = process.env.MLX_PORT ?? String(defaults.defaultPort);
   return {
     cmd,
     healthUrl: process.env.MLX_HEALTH_URL ?? (cmd.length > 0 ? `http://${host}:${port}/health` : undefined),
@@ -142,8 +181,9 @@ function vlmConfigFromEnv(): VlmConfig {
   const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
   if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
 
-  const host = process.env.VLM_HOST ?? "127.0.0.1";
-  const port = process.env.VLM_PORT ?? "12346";
+  const defaults = SERVICE_BY_NAME.vlm;
+  const host = process.env.VLM_HOST ?? defaults.defaultHost;
+  const port = process.env.VLM_PORT ?? String(defaults.defaultPort);
   return {
     cmd,
     healthUrl: process.env.VLM_HEALTH_URL ?? (cmd.length > 0 ? `http://${host}:${port}/health` : undefined),
@@ -189,6 +229,10 @@ export class ServiceManager {
   #kokomoProc: ManagedProcess | null = null;
   #kokomoState: ServiceState = { name: "kokomo", status: "stopped" };
 
+  #chatterboxCfg: ChatterboxConfig;
+  #chatterboxProc: ManagedProcess | null = null;
+  #chatterboxState: ServiceState = { name: "chatterbox", status: "stopped" };
+
   #mlxCfg: MlxConfig;
   #mlxProc: ManagedProcess | null = null;
   #mlxState: ServiceState = { name: "mlx", status: "stopped" };
@@ -199,6 +243,7 @@ export class ServiceManager {
 
   constructor() {
     this.#kokomoCfg = kokomoConfigFromEnv();
+    this.#chatterboxCfg = chatterboxConfigFromEnv();
     this.#mlxCfg = mlxConfigFromEnv();
     this.#vlmCfg = vlmConfigFromEnv();
   }
@@ -214,17 +259,19 @@ export class ServiceManager {
 
   getState(name: ServiceName): ServiceState {
     if (name === "kokomo") return this.#kokomoState;
+    if (name === "chatterbox") return this.#chatterboxState;
     if (name === "mlx") return this.#mlxState;
     if (name === "vlm") return this.#vlmState;
     return { name, status: "error", lastError: "Unknown service" } as ServiceState;
   }
 
   listStates(): ServiceState[] {
-    return [this.#kokomoState, this.#mlxState, this.#vlmState];
+    return [this.#kokomoState, this.#chatterboxState, this.#mlxState, this.#vlmState];
   }
 
   canStart(name: ServiceName): boolean {
     if (name === "kokomo") return kokomoConfigFromEnv().cmd.length > 0;
+    if (name === "chatterbox") return chatterboxConfigFromEnv().cmd.length > 0;
     if (name === "mlx") return mlxConfigFromEnv().cmd.length > 0;
     if (name === "vlm") return vlmConfigFromEnv().cmd.length > 0;
     return false;
@@ -234,6 +281,10 @@ export class ServiceManager {
     if (name === "kokomo") {
       this.#kokomoCfg = kokomoConfigFromEnv();
       return this.#kokomoCfg.healthUrl ? isHealthy(this.#kokomoCfg.healthUrl, timeoutMs) : false;
+    }
+    if (name === "chatterbox") {
+      this.#chatterboxCfg = chatterboxConfigFromEnv();
+      return this.#chatterboxCfg.healthUrl ? isHealthy(this.#chatterboxCfg.healthUrl, timeoutMs) : false;
     }
     if (name === "mlx") {
       this.#mlxCfg = mlxConfigFromEnv();
@@ -307,6 +358,93 @@ export class ServiceManager {
         this.#kokomoState = { ...this.#kokomoState, status: "error", detail: "Failed to start", lastError: msg };
         this.#emit({ type: "status", service: this.#kokomoState });
         await this.stop("kokomo");
+        throw err;
+      }
+      return;
+    }
+
+    if (name === "chatterbox") {
+      this.#chatterboxCfg = chatterboxConfigFromEnv();
+      const current = this.#chatterboxState.status;
+      if (current === "running" || current === "starting") return;
+
+      if (this.#chatterboxCfg.cmd.length === 0) {
+        throw new Error(
+          [
+            "Chatterbox TTS is not configured/installed.",
+            "",
+            "To install the built-in wrapper:",
+            "  1) bun run chatterbox:install -- --yes",
+            "  2) then in the TUI: /service chatterbox start",
+            "",
+            "Or provide your own command:",
+            "  - set CHATTERBOX_CMD or CHATTERBOX_CMD_JSON",
+          ].join("\n")
+        );
+      }
+
+      if (this.#chatterboxCfg.healthUrl && (await isHealthy(this.#chatterboxCfg.healthUrl, 300))) {
+        this.#chatterboxState = {
+          ...this.#chatterboxState,
+          status: "running",
+          detail: "Running (external)",
+          pid: undefined,
+          lastError: undefined,
+        };
+        this.#emit({ type: "status", service: this.#chatterboxState });
+        return;
+      }
+
+      this.#chatterboxState = { ...this.#chatterboxState, status: "starting", detail: "Starting..." };
+      this.#emit({ type: "status", service: this.#chatterboxState });
+
+      const proc = new ManagedProcess("chatterbox", this.#chatterboxCfg.cmd, {
+        inheritStdio: false,
+        onLine: (stream, line) => this.#emit({ type: "log", name: "chatterbox", stream, line }),
+        onExit: (code) => {
+          const wasStopping = this.#chatterboxState.status === "stopping";
+          this.#chatterboxProc = null;
+          this.#chatterboxState = {
+            ...this.#chatterboxState,
+            status: "stopped",
+            pid: undefined,
+            detail: wasStopping ? "Stopped" : "Exited",
+            lastExitCode: code,
+            lastError: wasStopping ? undefined : `Exited with code ${code}`,
+          };
+          this.#emit({ type: "status", service: this.#chatterboxState });
+        },
+      });
+
+      this.#chatterboxProc = proc;
+      proc.start();
+      this.#chatterboxState = { ...this.#chatterboxState, pid: proc.pid ?? undefined };
+      this.#emit({ type: "status", service: this.#chatterboxState });
+
+      try {
+        if (this.#chatterboxCfg.healthUrl) {
+          this.#chatterboxState = { ...this.#chatterboxState, detail: "Waiting for readiness..." };
+          this.#emit({ type: "status", service: this.#chatterboxState });
+          await waitForHealthy(this.#chatterboxCfg.healthUrl, this.#chatterboxCfg.readyTimeoutMs);
+        }
+        this.#chatterboxState = { ...this.#chatterboxState, status: "running", detail: "Running", lastError: undefined };
+        this.#emit({ type: "status", service: this.#chatterboxState });
+      } catch (err) {
+        if (this.#chatterboxCfg.healthUrl && (await isHealthy(this.#chatterboxCfg.healthUrl, 300))) {
+          this.#chatterboxState = {
+            ...this.#chatterboxState,
+            status: "running",
+            detail: "Running (external)",
+            pid: undefined,
+            lastError: undefined,
+          };
+          this.#emit({ type: "status", service: this.#chatterboxState });
+          return;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        this.#chatterboxState = { ...this.#chatterboxState, status: "error", detail: "Failed to start", lastError: msg };
+        this.#emit({ type: "status", service: this.#chatterboxState });
+        await this.stop("chatterbox");
         throw err;
       }
       return;
@@ -459,24 +597,45 @@ export class ServiceManager {
 
   async stop(name: ServiceName): Promise<void> {
     if (name === "kokomo") {
-    if (!this.#kokomoProc) {
-      this.#kokomoState = { ...this.#kokomoState, status: "stopped", detail: "Stopped", pid: undefined };
+      if (!this.#kokomoProc) {
+        this.#kokomoState = { ...this.#kokomoState, status: "stopped", detail: "Stopped", pid: undefined };
+        this.#emit({ type: "status", service: this.#kokomoState });
+        return;
+      }
+
+      if (this.#kokomoState.status === "stopping") return;
+
+      this.#kokomoState = { ...this.#kokomoState, status: "stopping", detail: "Stopping..." };
+      this.#emit({ type: "status", service: this.#kokomoState });
+
+      const proc = this.#kokomoProc;
+      await proc.stop().catch(() => {});
+      this.#kokomoProc = null;
+
+      this.#kokomoState = { ...this.#kokomoState, status: "stopped", pid: undefined, detail: "Stopped" };
       this.#emit({ type: "status", service: this.#kokomoState });
       return;
     }
 
-    if (this.#kokomoState.status === "stopping") return;
+    if (name === "chatterbox") {
+      if (!this.#chatterboxProc) {
+        this.#chatterboxState = { ...this.#chatterboxState, status: "stopped", detail: "Stopped", pid: undefined };
+        this.#emit({ type: "status", service: this.#chatterboxState });
+        return;
+      }
 
-    this.#kokomoState = { ...this.#kokomoState, status: "stopping", detail: "Stopping..." };
-    this.#emit({ type: "status", service: this.#kokomoState });
+      if (this.#chatterboxState.status === "stopping") return;
 
-    const proc = this.#kokomoProc;
-    await proc.stop().catch(() => {});
-    this.#kokomoProc = null;
+      this.#chatterboxState = { ...this.#chatterboxState, status: "stopping", detail: "Stopping..." };
+      this.#emit({ type: "status", service: this.#chatterboxState });
 
-    this.#kokomoState = { ...this.#kokomoState, status: "stopped", pid: undefined, detail: "Stopped" };
-    this.#emit({ type: "status", service: this.#kokomoState });
-    return;
+      const proc = this.#chatterboxProc;
+      await proc.stop().catch(() => {});
+      this.#chatterboxProc = null;
+
+      this.#chatterboxState = { ...this.#chatterboxState, status: "stopped", pid: undefined, detail: "Stopped" };
+      this.#emit({ type: "status", service: this.#chatterboxState });
+      return;
     }
 
     if (name === "mlx") {
@@ -527,10 +686,14 @@ export class ServiceManager {
   async autoStartIfConfigured(): Promise<void> {
     // Re-read env/config at auto-start time so post-install defaults apply without restart.
     this.#kokomoCfg = kokomoConfigFromEnv();
+    this.#chatterboxCfg = chatterboxConfigFromEnv();
     this.#mlxCfg = mlxConfigFromEnv();
     this.#vlmCfg = vlmConfigFromEnv();
     if (this.#kokomoCfg.autoStart) {
       await this.start("kokomo");
+    }
+    if (this.#chatterboxCfg.autoStart) {
+      await this.start("chatterbox");
     }
     if (this.#mlxCfg.autoStart) {
       await this.start("mlx");

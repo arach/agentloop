@@ -16,6 +16,8 @@
     "kokomo:health": "bun run --cwd packages/kokomo start health",
     "kokomo:install": "bash scripts/services/kokomo/install.sh",
     "kokomo:server": "bash scripts/services/kokomo/run-server.sh",
+    "chatterbox:install": "bash scripts/services/chatterbox/install.sh",
+    "chatterbox:server": "bash scripts/services/chatterbox/run-server.sh",
     "mlx:install": "bash scripts/services/mlx/install.sh",
     "mlx:server": "bash scripts/services/mlx/run-server.sh",
     "vlm:install": "bash scripts/services/vlm/install.sh",

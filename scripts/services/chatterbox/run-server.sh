@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
-VLM_BASE_DIR="${VLM_BASE_DIR:-$ROOT_DIR/external/mlx-vlm}"
-VENV_DIR="${VLM_VENV_DIR:-$VLM_BASE_DIR/.venv}"
+CHATTERBOX_BASE_DIR="${CHATTERBOX_BASE_DIR:-$ROOT_DIR/external/chatterbox-tts}"
+VENV_DIR="${CHATTERBOX_VENV_DIR:-$CHATTERBOX_BASE_DIR/.venv}"
 PY="$VENV_DIR/bin/python"
 
 ENV_FILE="${AGENTLOOP_ENV_FILE:-$ROOT_DIR/.agentloop/env}"
@@ -32,8 +32,8 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 if [[ ! -x "$PY" ]]; then
-  echo "[vlm] venv not found at: $PY" >&2
-  echo "[vlm] run: bun run vlm:install -- --yes" >&2
+  echo "[chatterbox] venv not found at: $PY" >&2
+  echo "[chatterbox] run: bash scripts/services/chatterbox/install.sh --yes" >&2
   exit 1
 fi
 
@@ -49,7 +49,6 @@ if [[ -n "${AGENTLOOP_HF_TOKEN:-}" ]]; then
   export HUGGINGFACE_HUB_TOKEN="${HUGGINGFACE_HUB_TOKEN:-$AGENTLOOP_HF_TOKEN}"
   export HF_TOKEN="${HF_TOKEN:-$AGENTLOOP_HF_TOKEN}"
 elif [[ -z "${HUGGINGFACE_HUB_TOKEN:-}" && -z "${HF_TOKEN:-}" ]]; then
-  # Fall back to a Hugging Face CLI login token if present.
   for HF_LOGIN_FILE in "$HOME/.huggingface/token" "$HOME/.cache/huggingface/token"; do
     if [[ -r "$HF_LOGIN_FILE" ]]; then
       HF_LOGIN_TOKEN="$(head -n 1 "$HF_LOGIN_FILE" | tr -d '[:space:]')"
@@ -62,10 +61,12 @@ elif [[ -z "${HUGGINGFACE_HUB_TOKEN:-}" && -z "${HF_TOKEN:-}" ]]; then
   done
 fi
 
-export VLM_HOST="${VLM_HOST:-127.0.0.1}"
-export VLM_PORT="${VLM_PORT:-12346}"
-export VLM_MODEL="${VLM_MODEL:-mlx-community/llava-v1.6-mistral-7b-4bit}"
-export VLM_MAX_TOKENS="${VLM_MAX_TOKENS:-256}"
-export VLM_TEMPERATURE="${VLM_TEMPERATURE:-0.2}"
+export CHATTERBOX_HOST="${CHATTERBOX_HOST:-127.0.0.1}"
+export CHATTERBOX_PORT="${CHATTERBOX_PORT:-8890}"
+export CHATTERBOX_DEVICE="${CHATTERBOX_DEVICE:-cpu}"
+export CHATTERBOX_EXAGGERATION="${CHATTERBOX_EXAGGERATION:-1.0}"
+export CHATTERBOX_TEMPERATURE="${CHATTERBOX_TEMPERATURE:-0.7}"
+export CHATTERBOX_CFG_WEIGHT="${CHATTERBOX_CFG_WEIGHT:-0.5}"
+export CHATTERBOX_CHUNK_SIZE="${CHATTERBOX_CHUNK_SIZE:-250}"
 
-exec "$PY" "$ROOT_DIR/scripts/services/vlm/server.py" --host "$VLM_HOST" --port "$VLM_PORT" --model "$VLM_MODEL"
+exec "$PY" "$ROOT_DIR/scripts/services/chatterbox/server.py" --host "$CHATTERBOX_HOST" --port "$CHATTERBOX_PORT"

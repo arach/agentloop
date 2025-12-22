@@ -35,6 +35,9 @@ logs/
 .tmp/
 tmp/
 
+# Screenshots
+screenshots/
+
 # AgentLoop local installs
 .agentloop/
 external/

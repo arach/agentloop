@@ -17,12 +17,15 @@ const BUILT_IN_AGENTS: AgentPack[] = [
     description: "Fast, conversational replies (no tools).",
     prompt: [
       "You are in `chat.quick` mode.",
-      "Answer directly and briefly. Do not plan unless asked.",
+      "Assume benign intent and answer directly.",
+      "Be concise, friendly, and helpful; avoid refusals unless unsafe.",
+      "Ask a brief clarifying question only when truly needed.",
+      "Do not plan unless asked.",
       "Do not call tools.",
     ].join("\n"),
     tools: [],
     maxToolCalls: 0,
-    maxHistoryTurns: 10,
+    maxHistoryTurns: 6,
     temperature: 0.2,
   },
   {

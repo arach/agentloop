@@ -36,9 +36,9 @@ export function isLogLikeSystemMessage(text: string): boolean {
   if (first.startsWith("[copy]")) return true;
   if (first.startsWith("$ ")) return true;
   if (first.startsWith("! ")) return true;
-  if (first.startsWith("[kokomo]") || first.startsWith("[mlx]") || first.startsWith("[vlm]")) return true;
+  if (first.startsWith("[kokomo]") || first.startsWith("[chatterbox]") || first.startsWith("[mlx]") || first.startsWith("[vlm]"))
+    return true;
   // Generic bracketed log prefix: [something] ...
   if (/^\[[A-Za-z0-9_.:-]+\]/.test(first)) return true;
   return false;
 }
-

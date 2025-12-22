@@ -81,7 +81,7 @@ Types also exist for tool events (`tool.call`, `tool.result`) but the engine doe
 - `session.cancel` is not cooperative: it doesn’t stop an active `session.send` stream.
 - No persistence: sessions/messages are lost on engine restart.
 - No session resume: the TUI starts a new session on connect and doesn’t attempt to rehydrate existing sessions.
-- VLM usage is currently “service-ready” but the TUI doesn’t yet have a great UX for attaching images (it supports selection/copy, not drag/drop image input).
+- VLM usage is “service-ready”; the TUI now accepts drag/dropped image paths in the input, but the UX is still basic (single-turn vision, no gallery).
 
 ## Integration Point
 

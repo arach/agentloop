@@ -33,4 +33,8 @@ bun run mlx:install -- --yes
 - `MLX_CMD` / `MLX_CMD_JSON` (override engine launch command)
 - `AGENTLOOP_MANAGE_MLX=1` (auto-start on engine boot)
 - `AGENTLOOP_LLM=mlx` (engine prefers MLX for chat even if not marked running)
+- `AGENTLOOP_HF_TOKEN` (for gated model downloads via Hugging Face)
+- `AGENTLOOP_MLX_URL_QUICK` (optional alternate base URL for the quick/inner-loop model)
+- `AGENTLOOP_ENV_FILE` (optional env file path, default `.agentloop/env`)
 
+If you already ran `huggingface-cli login`, the wrapper will reuse that token automatically.

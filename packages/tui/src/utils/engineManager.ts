@@ -130,8 +130,8 @@ export function spawnManagedEngine(opts: { engineDir: string; stateFile: string;
       "--state-file",
       opts.stateFile,
     ],
-    stdout: "ignore",
-    stderr: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
     stdin: "ignore",
   });
 }
@@ -156,4 +156,3 @@ export async function stopManagedEngine(opts: { stateFile: string }): Promise<{ 
 export async function ensureRunDir(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
 }
-

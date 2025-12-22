@@ -22,6 +22,12 @@ export type AgentStepEvent =
   | { type: "tool.result"; toolId: string; result: unknown }
   | { type: "assistant.text"; content: string };
 
+export type AgentPerfEvent = {
+  name: "llm.total" | "tool.run";
+  durationMs: number;
+  meta?: Record<string, unknown>;
+};
+
 export async function runSimpleAgent(options: {
   sessionMessages: Message[];
   services: ServiceManager;
@@ -29,6 +35,7 @@ export async function runSimpleAgent(options: {
   systemPrompt?: string;
   allowedTools?: ToolName[];
   onEvent?: (evt: AgentStepEvent) => void;
+  onPerf?: (evt: AgentPerfEvent) => void;
 }): Promise<string> {
   const root = repoRoot();
   const maxToolCalls = options.maxToolCalls ?? 3;
@@ -47,7 +54,13 @@ export async function runSimpleAgent(options: {
   let lastAssistant = "";
 
   for (let i = 0; i < maxToolCalls + 1; i++) {
+    const llmStart = Date.now();
     const out = await mlxChatCompletion(messages);
+    options.onPerf?.({
+      name: "llm.total",
+      durationMs: Date.now() - llmStart,
+      meta: { model: out.model, step: i + 1 },
+    });
     lastAssistant = out.content;
 
     const toolCall = parseToolCallFromText(lastAssistant);
@@ -66,8 +79,14 @@ export async function runSimpleAgent(options: {
     };
     options.onEvent?.({ type: "tool.call", tool });
 
+    const toolStart = Date.now();
     const result = await runTool(root, options.services, toolCall as ToolCallInput, { allowedTools: options.allowedTools });
     options.onEvent?.({ type: "tool.result", toolId, result });
+    options.onPerf?.({
+      name: "tool.run",
+      durationMs: Date.now() - toolStart,
+      meta: { tool: toolCall.name, step: i + 1 },
+    });
 
     // Feed the result back in as a system message.
     messages = [

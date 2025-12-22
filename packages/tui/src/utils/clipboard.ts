@@ -33,8 +33,16 @@ export async function tryCopyToClipboard(text: string): Promise<boolean> {
         stderr: "ignore",
       });
       if (proc.stdin) {
-        await proc.stdin.write(bytes);
-        await proc.stdin.end();
+        // Bun types vary by version; support both FileSink-style and stream-style stdin.
+        const stdin: any = proc.stdin as any;
+        if (stdin && typeof stdin.getWriter === "function") {
+          const writer = stdin.getWriter();
+          await writer.write(bytes);
+          await writer.close();
+        } else if (stdin && typeof stdin.write === "function") {
+          await stdin.write(bytes);
+          if (typeof stdin.end === "function") await stdin.end();
+        }
       }
       const code = await proc.exited;
       if (code === 0) return true;

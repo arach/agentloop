@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { SERVICE_NAMES } from "./services.js";
+import type { ServiceName, ServiceState } from "./services.js";
 
 // Message types
 export interface Message {
@@ -16,17 +18,6 @@ export interface ToolCall {
   result?: unknown;
 }
 
-export type ServiceName = "kokomo" | "mlx" | "vlm";
-export type ServiceStatus = "stopped" | "starting" | "running" | "stopping" | "error";
-
-export interface ServiceState {
-  name: ServiceName;
-  status: ServiceStatus;
-  pid?: number;
-  detail?: string;
-  lastExitCode?: number;
-  lastError?: string;
-}
 
 // Session state
 export interface Session {
@@ -54,6 +45,7 @@ export const CommandSchema = z.discriminatedUnion("type", [
     payload: z.object({
       sessionId: z.string(),
       content: z.string(),
+      images: z.array(z.string()).optional(),
     }),
   }),
   z.object({
@@ -78,19 +70,19 @@ export const CommandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("service.start"),
     payload: z.object({
-      name: z.enum(["kokomo", "mlx", "vlm"]),
+      name: z.enum(SERVICE_NAMES),
     }),
   }),
   z.object({
     type: z.literal("service.stop"),
     payload: z.object({
-      name: z.enum(["kokomo", "mlx", "vlm"]),
+      name: z.enum(SERVICE_NAMES),
     }),
   }),
   z.object({
     type: z.literal("service.status"),
     payload: z.object({
-      name: z.enum(["kokomo", "mlx", "vlm"]).optional(),
+      name: z.enum(SERVICE_NAMES).optional(),
     }),
   }),
 ]);
@@ -115,6 +107,7 @@ export type EngineEvent =
   | { type: "assistant.message"; sessionId: string; messageId: string; content: string }
   | { type: "tool.call"; sessionId: string; tool: ToolCall }
   | { type: "tool.result"; sessionId: string; toolId: string; result: unknown }
+  | { type: "perf.metric"; sessionId?: string; name: string; durationMs: number; meta?: Record<string, unknown> }
   | { type: "service.status"; service: ServiceState }
   | { type: "service.log"; name: ServiceName; stream: "stdout" | "stderr"; line: string }
   | { type: "error"; sessionId?: string; error: string };
@@ -144,3 +137,5 @@ export const DEFAULT_CONFIG: AgentLoopConfig = {
 export function createId(): string {
   return crypto.randomUUID();
 }
+
+export * from "./services.js";

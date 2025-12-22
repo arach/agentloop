@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { SERVICE_NAMES, type ServiceName } from "@agentloop/core";
 import type { ServiceManager } from "../services/ServiceManager.js";
 
 export type ToolName = "time.now" | "fs.read" | "fs.list" | "service.status" | "logo.fetch";
@@ -8,7 +9,7 @@ export type ToolCallInput =
   | { name: "time.now"; args: Record<string, never> }
   | { name: "fs.read"; args: { path: string; maxBytes?: number } }
   | { name: "fs.list"; args: { path: string } }
-  | { name: "service.status"; args: { name: "kokomo" | "mlx" | "vlm" } }
+  | { name: "service.status"; args: { name: ServiceName } }
   | { name: "logo.fetch"; args: { domain?: string; brand?: string } };
 
 export type ToolResult =
@@ -30,7 +31,8 @@ export function toolSystemPrompt(repoRoot: string, allowedTools?: ToolName[]): s
       `- fs.read args={\"path\":\"<repo-relative>\",\"maxBytes\":65536} -> { path, bytes, content } (repo root: ${repoRoot})`
     );
   if (allow.has("fs.list")) lines.push("- fs.list args={\"path\":\"<repo-relative>\"} -> { path, entries:[{name,type}] }");
-  if (allow.has("service.status")) lines.push("- service.status args={\"name\":\"kokomo\"|\"mlx\"|\"vlm\"} -> ServiceState");
+  if (allow.has("service.status"))
+    lines.push(`- service.status args={\"name\":\"${SERVICE_NAMES.join("\"|\"")}\"} -> ServiceState`);
   if (allow.has("logo.fetch"))
     lines.push("- logo.fetch args={\"domain\":\"example.com\"} -> { domain, url, filePath, bytes } (downloads logo PNG to local cache)");
 
@@ -92,8 +94,9 @@ export function parseToolCallFromText(text: string): ToolCallInput | null {
     }
     if (name === "service.status" && args && typeof args === "object") {
       const n = (args as any).name;
-      if (n !== "kokomo" && n !== "mlx" && n !== "vlm") return null;
-      return { name, args: { name: n } };
+      if (typeof n !== "string") return null;
+      if (!SERVICE_NAMES.includes(n as ServiceName)) return null;
+      return { name, args: { name: n as ServiceName } };
     }
     if (name === "logo.fetch" && args && typeof args === "object") {
       const domain = (args as any).domain;

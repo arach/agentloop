@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type InstallerId = "kokomo" | "mlx" | "mlx-model" | "vlm";
+export type InstallerId = "kokomo" | "chatterbox" | "mlx" | "mlx-model" | "vlm";
 
 export type InstallerSpec = {
   id: InstallerId;
@@ -37,6 +37,20 @@ export const installers: Record<InstallerId, InstallerSpec> = {
     run: () => {
       const root = repoRoot();
       return { cmd: ["bash", path.join(root, "scripts/services/kokomo/install.sh"), "--yes", "--upgrade"], cwd: root };
+    },
+  },
+  chatterbox: {
+    id: "chatterbox",
+    title: "Chatterbox TTS (voice cloning)",
+    description: "Creates ./external/chatterbox-tts venv and installs chatterbox-tts via uv.",
+    preview: [
+      "Creates venv under ./external/chatterbox-tts/.venv",
+      "Installs chatterbox-tts + PyTorch deps via uv (downloads from PyPI)",
+      "Models are downloaded on first use (Hugging Face)",
+    ],
+    run: () => {
+      const root = repoRoot();
+      return { cmd: ["bash", path.join(root, "scripts/services/chatterbox/install.sh"), "--yes", "--upgrade"], cwd: root };
     },
   },
   mlx: {
