@@ -1,3 +1,7 @@
+import { SERVICE_BY_NAME } from "@agentloop/core";
+import { envNumber, envString } from "../utils/env.js";
+import { joinUrl } from "../utils/url.js";
+
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 export type MlxChatOptions = {
@@ -9,29 +13,18 @@ export type MlxChatOptions = {
   topP?: number;
 };
 
-function joinUrl(baseUrl: string, pathname: string): string {
-  const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
-  return `${normalizedBase}${normalizedPath}`;
-}
-
-function envNumber(key: string): number | undefined {
-  const raw = process.env[key];
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function envString(key: string): string | undefined {
-  const raw = process.env[key];
-  return raw ? raw : undefined;
+function defaultMlxBaseUrl(): string {
+  const defaults = SERVICE_BY_NAME.mlx;
+  const host = envString("MLX_HOST") ?? defaults.defaultHost;
+  const port = envString("MLX_PORT") ?? String(defaults.defaultPort);
+  return `http://${host}:${port}`;
 }
 
 export async function mlxChatCompletion(
   messages: ChatMessage[],
   opts: MlxChatOptions = {}
 ): Promise<{ model: string; content: string }> {
-  const baseUrl = opts.baseUrl ?? envString("AGENTLOOP_MLX_URL") ?? "http://127.0.0.1:12345";
+  const baseUrl = opts.baseUrl ?? envString("AGENTLOOP_MLX_URL") ?? defaultMlxBaseUrl();
   const url = joinUrl(baseUrl, "/v1/chat/completions");
   const model = opts.model ?? envString("AGENTLOOP_MLX_MODEL") ?? envString("MLX_MODEL") ?? "mlx-community/Llama-3.2-3B-Instruct-4bit";
 
@@ -69,7 +62,7 @@ export async function mlxChatCompletionStream(
   onToken: StreamTokenHandler,
   opts: MlxChatOptions = {}
 ): Promise<{ model: string; content: string }> {
-  const baseUrl = opts.baseUrl ?? envString("AGENTLOOP_MLX_URL") ?? "http://127.0.0.1:12345";
+  const baseUrl = opts.baseUrl ?? envString("AGENTLOOP_MLX_URL") ?? defaultMlxBaseUrl();
   const url = joinUrl(baseUrl, "/v1/chat/completions");
   const model = opts.model ?? envString("AGENTLOOP_MLX_MODEL") ?? envString("MLX_MODEL") ?? "mlx-community/Llama-3.2-3B-Instruct-4bit";
 

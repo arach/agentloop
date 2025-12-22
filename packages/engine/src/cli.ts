@@ -1,3 +1,5 @@
+import { envNumber } from "./utils/env.js";
+
 type EngineCli = {
   host: string;
   port: number;
@@ -5,13 +7,6 @@ type EngineCli = {
   stateFile: string | null;
   help: boolean;
 };
-
-function envNumber(key: string): number | null {
-  const raw = process.env[key];
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
 
 function printHelp(): void {
   const lines = [

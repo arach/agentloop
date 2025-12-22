@@ -4,6 +4,7 @@ import { shellSplit } from "./shellSplit.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { envBool, envNumber } from "../utils/env.js";
 
 type ServiceEvent =
   | { type: "status"; service: ServiceState }
@@ -39,37 +40,44 @@ type VlmConfig = {
   autoStart: boolean;
 };
 
-function envBool(key: string, defaultValue = false): boolean {
-  const raw = process.env[key];
-  if (!raw) return defaultValue;
-  return raw === "1" || raw.toLowerCase() === "true" || raw.toLowerCase() === "yes";
-}
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
 
-function envNumber(key: string, defaultValue: number): number {
-  const raw = process.env[key];
-  if (!raw) return defaultValue;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : defaultValue;
-}
+const serviceDefaults = {
+  kokomo: {
+    scriptPath: path.join(repoRoot, "scripts/services/kokomo/run-server.sh"),
+    venvPython: path.join(repoRoot, "external/kokomo-mlx/.venv/bin/python"),
+  },
+  chatterbox: {
+    scriptPath: path.join(repoRoot, "scripts/services/chatterbox/run-server.sh"),
+    venvPython: path.join(repoRoot, "external/chatterbox-tts/.venv/bin/python"),
+  },
+  mlx: {
+    scriptPath: path.join(repoRoot, "scripts/services/mlx/run-server.sh"),
+    venvPython: path.join(repoRoot, "external/mlx-llm/.venv/bin/python"),
+  },
+  vlm: {
+    scriptPath: path.join(repoRoot, "scripts/services/vlm/run-server.sh"),
+    venvPython: path.join(repoRoot, "external/mlx-vlm/.venv/bin/python"),
+  },
+} as const;
 
-function kokomoConfigFromEnv(): KokomoConfig {
-  const cmdJson = process.env.KOKOMO_CMD_JSON;
-  const cmdStr = process.env.KOKOMO_CMD;
-
-  let cmd: string[] = [];
+function parseCommandFromEnv(jsonKey: string, stringKey: string): string[] {
+  const cmdJson = process.env[jsonKey];
+  const cmdStr = process.env[stringKey];
   if (cmdJson) {
     const parsed = JSON.parse(cmdJson);
     if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
-      throw new Error("KOKOMO_CMD_JSON must be a JSON array of strings.");
+      throw new Error(`${jsonKey} must be a JSON array of strings.`);
     }
-    cmd = parsed;
-  } else if (cmdStr) {
-    cmd = shellSplit(cmdStr);
+    return parsed;
   }
+  if (cmdStr) return shellSplit(cmdStr);
+  return [];
+}
 
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/services/kokomo/run-server.sh");
-  const venvPython = path.join(repoRoot, "external/kokomo-mlx/.venv/bin/python");
+function kokomoConfigFromEnv(): KokomoConfig {
+  const cmd = parseCommandFromEnv("KOKOMO_CMD_JSON", "KOKOMO_CMD");
+  const { scriptPath, venvPython } = serviceDefaults.kokomo;
 
   const kokomoLocal = envBool("AGENTLOOP_KOKOMO_LOCAL", false);
   const useDefaults = envBool("KOKOMO_USE_DEFAULTS", kokomoLocal) || kokomoLocal;
@@ -93,23 +101,8 @@ function kokomoConfigFromEnv(): KokomoConfig {
 }
 
 function chatterboxConfigFromEnv(): ChatterboxConfig {
-  const cmdJson = process.env.CHATTERBOX_CMD_JSON;
-  const cmdStr = process.env.CHATTERBOX_CMD;
-
-  let cmd: string[] = [];
-  if (cmdJson) {
-    const parsed = JSON.parse(cmdJson);
-    if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
-      throw new Error("CHATTERBOX_CMD_JSON must be a JSON array of strings.");
-    }
-    cmd = parsed;
-  } else if (cmdStr) {
-    cmd = shellSplit(cmdStr);
-  }
-
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/services/chatterbox/run-server.sh");
-  const venvPython = path.join(repoRoot, "external/chatterbox-tts/.venv/bin/python");
+  const cmd = parseCommandFromEnv("CHATTERBOX_CMD_JSON", "CHATTERBOX_CMD");
+  const { scriptPath, venvPython } = serviceDefaults.chatterbox;
   const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
   if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
 
@@ -125,23 +118,8 @@ function chatterboxConfigFromEnv(): ChatterboxConfig {
 }
 
 function mlxConfigFromEnv(): MlxConfig {
-  const cmdJson = process.env.MLX_CMD_JSON;
-  const cmdStr = process.env.MLX_CMD;
-
-  let cmd: string[] = [];
-  if (cmdJson) {
-    const parsed = JSON.parse(cmdJson);
-    if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
-      throw new Error("MLX_CMD_JSON must be a JSON array of strings.");
-    }
-    cmd = parsed;
-  } else if (cmdStr) {
-    cmd = shellSplit(cmdStr);
-  }
-
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/services/mlx/run-server.sh");
-  const venvPython = path.join(repoRoot, "external/mlx-llm/.venv/bin/python");
+  const cmd = parseCommandFromEnv("MLX_CMD_JSON", "MLX_CMD");
+  const { scriptPath, venvPython } = serviceDefaults.mlx;
 
   // Sensible defaults:
   // - If not configured, use the wrapper script once the venv exists (post-install).
@@ -161,23 +139,8 @@ function mlxConfigFromEnv(): MlxConfig {
 }
 
 function vlmConfigFromEnv(): VlmConfig {
-  const cmdJson = process.env.VLM_CMD_JSON;
-  const cmdStr = process.env.VLM_CMD;
-
-  let cmd: string[] = [];
-  if (cmdJson) {
-    const parsed = JSON.parse(cmdJson);
-    if (!Array.isArray(parsed) || parsed.some((x) => typeof x !== "string")) {
-      throw new Error("VLM_CMD_JSON must be a JSON array of strings.");
-    }
-    cmd = parsed;
-  } else if (cmdStr) {
-    cmd = shellSplit(cmdStr);
-  }
-
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-  const scriptPath = path.join(repoRoot, "scripts/services/vlm/run-server.sh");
-  const venvPython = path.join(repoRoot, "external/mlx-vlm/.venv/bin/python");
+  const cmd = parseCommandFromEnv("VLM_CMD_JSON", "VLM_CMD");
+  const { scriptPath, venvPython } = serviceDefaults.vlm;
   const canUseWrapper = existsSync(scriptPath) && existsSync(venvPython);
   if (cmd.length === 0 && canUseWrapper) cmd = ["bash", scriptPath];
 

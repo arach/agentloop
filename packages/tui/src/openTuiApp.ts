@@ -2,11 +2,16 @@ import {
   ASCIIFontRenderable,
   BoxRenderable,
   ScrollBoxRenderable,
+  StyledText,
   TabSelectRenderable,
   TabSelectRenderableEvents,
   TextRenderable,
   TextareaRenderable,
   createCliRenderer,
+  bold,
+  dim,
+  fg,
+  t,
 } from "@opentui/core";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
@@ -314,6 +319,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       "^Y          copy last",
       "^N          new session",
       "^R          reconnect",
+      "^S          services",
+      "^L          logs",
       "^A          about",
       "^C          quit (press twice)",
     ].join("\n"),
@@ -402,7 +409,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     id: "servicesSheetText",
     fg: theme.fg,
     selectable: true,
-    wrapMode: "word",
+    wrapMode: "none",
     selectionBg: theme.selectionBg,
     selectionFg: theme.selectionFg,
     width: "100%",
@@ -1041,6 +1048,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   let servicesSheetNoteUntil = 0;
   const portByService: Record<ServiceName, number> = SERVICE_PORTS;
   let managedEngineLogLines: string[] = [];
+  const engineLogName = "engine";
 
   // Auto-copy selection state
   let lastAutoCopyAt = 0;
@@ -1180,21 +1188,70 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     ).join(" ")}`;
     const known: ServiceName[] = [...SERVICE_NAMES];
 
-    const svcLines: string[] = [];
-    svcLines.push("name       inst  state        port   detail");
+    const statusBadge = (status?: ServiceState["status"]) => {
+      if (status === "running") return "RUN";
+      if (status === "starting") return "START";
+      if (status === "stopping") return "STOP";
+      if (status === "error") return "ERR";
+      if (status === "stopped") return "OFF";
+      return "UNK";
+    };
+    const statusColor = (status?: ServiceState["status"]) => {
+      if (status === "running") return theme.success;
+      if (status === "starting") return theme.warning;
+      if (status === "stopping") return theme.warning;
+      if (status === "error") return theme.danger;
+      if (status === "stopped") return theme.dim;
+      return theme.muted;
+    };
+    const nameWidth = Math.max(7, ...known.map((name) => name.length + (name === activeService ? 1 : 0)));
+    const instWidth = 4;
+    const statusWidth = 7;
+    const portWidth = 4;
+    const headerRow = `  ${"svc*".padEnd(nameWidth, " ")} ${"inst".padEnd(instWidth, " ")} ${"status".padEnd(
+      statusWidth,
+      " "
+    )} ${"port".padEnd(portWidth, " ")} detail`;
+    const separatorRow = `  ${"-".repeat(nameWidth)} ${"-".repeat(instWidth)} ${"-".repeat(statusWidth)} ${"-".repeat(
+      portWidth
+    )} ------------------------------------------`;
+
+    const chunks: StyledText[] = [];
+    const pushLine = (line: StyledText) => {
+      chunks.push(line, t`\n`);
+    };
+
+    pushLine(fg(theme.dim2)(headerRow));
+    pushLine(fg(theme.dim2)(separatorRow));
     for (const name of known) {
       const svc = services[name];
-      const status = (svc?.status ?? "unknown").padEnd(10, " ");
-      const inst = installState[name] ? "yes " : "no  ";
-      const port = String(portByService[name]).padEnd(5, " ");
+      const label = (name + (name === activeService ? "*" : "")).padEnd(nameWidth, " ");
+      const labelStyled = name === activeService ? bold(label) : label;
+      const inst = (installState[name] ? "yes" : "no").padEnd(instWidth, " ");
+      const status = statusBadge(svc?.status).padEnd(statusWidth, " ");
+      const port = String(portByService[name]).padEnd(portWidth, " ");
       const detail = (svc?.detail ?? "").trim();
-      const tail = svc?.lastError ? `err: ${svc.lastError}` : svc?.lastExitCode != null ? `exit: ${svc.lastExitCode}` : "";
-      svcLines.push(`${name.padEnd(10, " ")} ${inst} ${status} ${port}  ${(detail || tail || "—").slice(0, 60)}`);
+      const tail = svc?.lastError
+        ? `err: ${svc.lastError}`
+        : svc?.lastExitCode != null
+          ? `exit: ${svc.lastExitCode}`
+          : "";
+      const summary = SERVICE_BY_NAME[name]?.summary ?? "";
+      const info = (detail || tail || summary || "—").replace(/\s+/g, " ").slice(0, 58);
+      pushLine(
+        t`  ${fg(theme.fg)(labelStyled)} ${fg(theme.muted)(inst)} ${fg(statusColor(svc?.status))(
+          status
+        )} ${fg(theme.muted)(port)} ${fg(theme.fg)(info)}`
+      );
     }
 
     const feed = recentServiceFeed.slice(-3);
-    const feedBlock = feed.length ? `\n\nRecent:\n${feed.join("\n")}` : "";
-    servicesText.content = svcLines.join("\n") + feedBlock;
+    if (feed.length) {
+      pushLine(t``);
+      pushLine(fg(theme.dim)("Recent:"));
+      for (const line of feed) pushLine(fg(theme.dim2)(line));
+    }
+    servicesText.content = new StyledText(chunks.flatMap((c) => c.chunks));
 
     if (!servicesTabsSynced) {
       // Ensure service tab selection starts on the default service.
@@ -1245,12 +1302,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     if (servicesSheetNote && Date.now() > servicesSheetNoteUntil) {
       servicesSheetNote = null;
     }
-    servicesSheetMeta.content = servicesSheetNote
-      ? `Running + available services · ${servicesSheetNote}`
-      : "Running + available services";
     const known: ServiceName[] = [...SERVICE_NAMES];
     const running = known.filter((name) => services[name]?.status === "running");
     const available = known.filter((name) => services[name]?.status !== "running");
+    const metaBase = `Running ${running.length} · Available ${available.length} · Active ${activeService}`;
+    servicesSheetMeta.content = servicesSheetNote ? `${metaBase} · ${servicesSheetNote}` : metaBase;
     servicesSheetRunning = running;
     servicesSheetAvailable = available;
     const clampIndex = (idx: number, len: number) => (len <= 0 ? 0 : Math.max(0, Math.min(idx, len - 1)));
@@ -1263,49 +1319,112 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     } else if (servicesSheetSection === "available" && available.length === 0 && running.length > 0) {
       servicesSheetSection = "running";
     }
-    const lines: string[] = [];
+    const chunks: StyledText[] = [];
+    const pushLine = (line: StyledText) => {
+      chunks.push(line, t`\n`);
+    };
     let lineIndex = 0;
     let selectedLine: number | null = null;
 
-    lines.push(`Running${servicesSheetSection === "running" ? " •" : ""}`);
+    const nameWidth = Math.max(7, ...known.map((name) => name.length + (name === activeService ? 1 : 0)));
+    const instWidth = 4;
+    const statusWidth = 7;
+    const portWidth = 4;
+    const headerRow = `  ${"svc*".padEnd(nameWidth, " ")} ${"inst".padEnd(instWidth, " ")} ${"status".padEnd(
+      statusWidth,
+      " "
+    )} ${"port".padEnd(portWidth, " ")} detail`;
+    const separatorRow = `  ${"-".repeat(nameWidth)} ${"-".repeat(instWidth)} ${"-".repeat(statusWidth)} ${"-".repeat(
+      portWidth
+    )} ------------------------------------------`;
+    const statusBadge = (status?: ServiceState["status"]) => {
+      if (status === "running") return "RUN";
+      if (status === "starting") return "START";
+      if (status === "stopping") return "STOP";
+      if (status === "error") return "ERR";
+      if (status === "stopped") return "OFF";
+      return "UNK";
+    };
+    const statusColor = (status?: ServiceState["status"]) => {
+      if (status === "running") return theme.success;
+      if (status === "starting") return theme.warning;
+      if (status === "stopping") return theme.warning;
+      if (status === "error") return theme.danger;
+      if (status === "stopped") return theme.dim;
+      return theme.muted;
+    };
+
+    pushLine(bold(`Running${servicesSheetSection === "running" ? " •" : ""}`));
     lineIndex += 1;
     if (running.length === 0) {
-      lines.push("  (none)");
+      pushLine(fg(theme.dim)("(none)"));
       lineIndex += 1;
     } else {
+      pushLine(fg(theme.dim2)(headerRow));
+      lineIndex += 1;
+      pushLine(fg(theme.dim2)(separatorRow));
+      lineIndex += 1;
       running.forEach((name, idx) => {
         const svc = services[name];
         const selected = servicesSheetSection === "running" && idx === servicesSheetSelection.running;
         const prefix = selected ? "›" : " ";
-        lines.push(`${prefix} ${name} · port ${portByService[name]} · ${svc?.detail ?? "Running"}`);
+        const label = (name + (name === activeService ? "*" : "")).padEnd(nameWidth, " ");
+        const inst = (installState[name] ? "yes" : "no").padEnd(instWidth, " ");
+        const status = statusBadge(svc?.status).padEnd(statusWidth, " ");
+        const port = String(portByService[name]).padEnd(portWidth, " ");
+        const detail = (svc?.detail ?? "").trim();
+        const tail = svc?.lastError
+          ? `err: ${svc.lastError}`
+          : svc?.lastExitCode != null
+            ? `exit: ${svc.lastExitCode}`
+            : "";
+        const summary = SERVICE_BY_NAME[name]?.summary ?? "";
+        const info = (detail || tail || summary || "—").replace(/\s+/g, " ").slice(0, 58);
+        const labelStyled = name === activeService ? bold(label) : label;
+        pushLine(
+          t`${fg(theme.dim2)(prefix)} ${fg(theme.fg)(labelStyled)} ${fg(theme.muted)(inst)} ${fg(
+            statusColor(svc?.status)
+          )(status)} ${fg(theme.muted)(port)} ${fg(theme.fg)(info)}`
+        );
         if (selected) selectedLine = lineIndex;
         lineIndex += 1;
       });
     }
-    lines.push("");
+    pushLine(t``);
     lineIndex += 1;
-    lines.push(`Available${servicesSheetSection === "available" ? " •" : ""}`);
+    pushLine(bold(`Available${servicesSheetSection === "available" ? " •" : ""}`));
     lineIndex += 1;
     if (available.length === 0) {
-      lines.push("  (none)");
+      pushLine(fg(theme.dim)("(none)"));
       lineIndex += 1;
     } else {
-      lines.push("  name   installed  state      port   detail");
+      pushLine(fg(theme.dim2)(headerRow));
+      lineIndex += 1;
+      pushLine(fg(theme.dim2)(separatorRow));
       lineIndex += 1;
       available.forEach((name, idx) => {
         const svc = services[name];
-        const inst = installState[name] ? "yes" : "no ";
-        const status = (svc?.status ?? "stopped").padEnd(9, " ");
-        const detail = svc?.detail ?? (svc?.lastError ? `err: ${svc.lastError}` : "—");
+        const inst = (installState[name] ? "yes" : "no").padEnd(instWidth, " ");
+        const status = statusBadge(svc?.status ?? "stopped").padEnd(statusWidth, " ");
+        const detail = svc?.detail ?? (svc?.lastError ? `err: ${svc.lastError}` : "");
+        const summary = SERVICE_BY_NAME[name]?.summary ?? "";
+        const info = (detail || summary || "—").replace(/\s+/g, " ").slice(0, 58);
         const selected = servicesSheetSection === "available" && idx === servicesSheetSelection.available;
         const prefix = selected ? "›" : " ";
-        lines.push(`${prefix} ${name.padEnd(6, " ")} ${inst.padEnd(9, " ")} ${status} ${String(portByService[name]).padEnd(5, " ")} ${detail}`);
+        const label = (name + (name === activeService ? "*" : "")).padEnd(nameWidth, " ");
+        const labelStyled = name === activeService ? bold(label) : label;
+        const port = String(portByService[name]).padEnd(portWidth, " ");
+        pushLine(
+          t`${fg(theme.dim2)(prefix)} ${fg(theme.fg)(labelStyled)} ${fg(theme.muted)(inst)} ${fg(
+            statusColor(svc?.status)
+          )(status)} ${fg(theme.muted)(port)} ${fg(theme.fg)(info)}`
+        );
         if (selected) selectedLine = lineIndex;
         lineIndex += 1;
       });
     }
 
-    servicesSheetText.content = lines.join("\n");
+    servicesSheetText.content = new StyledText(chunks.flatMap((c) => c.chunks));
     ensureServicesSheetSelectionVisible(selectedLine);
   };
 
@@ -1354,7 +1473,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
             ? "error"
             : "disconnected";
     const agentLabel = routingMode === "pinned" ? `agent ${activeAgentName ?? "(unset)"}` : "agent auto";
-    const baseRight = "^D details · /help";
+    const baseRight = "^D details · ^S services · ^L logs · /help";
     const hasToast = toast && Date.now() < toastUntil;
 
     statusLeft.content = `${conn} · ${sessionStatus} · ${agentLabel}`;
@@ -1404,6 +1523,22 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     servicesOverlay.visible = servicesSheetOpen && !isSplash;
   };
 
+  const toggleLogsVisibility = () => {
+    if (!showDetails) showDetails = true;
+    logsCollapsed = !logsCollapsed;
+    if (!logsCollapsed && connectionStatus === "error") {
+      activeLogService = engineLogName;
+    }
+    applyScreenVisibility();
+    updateAll();
+    setToast(logsCollapsed ? "logs: hidden" : "logs: visible");
+    if (!logsCollapsed) {
+      renderer.focusRenderable(logsScroll);
+      logsScroll.focus();
+    }
+    requestRender();
+  };
+
   const setScreen = (next: Screen) => {
     screen = next;
     applyScreenVisibility();
@@ -1430,6 +1565,7 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   };
 
   const setServicesSheetOpen = (next: boolean) => {
+    if (next) showDetails = true;
     servicesSheetOpen = next;
     if (servicesSheetOpen) aboutOpen = false;
     updateServicesSheet();
@@ -1437,9 +1573,11 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
     if (servicesSheetOpen) {
       renderer.focusRenderable(servicesSheetScroll);
       servicesSheetScroll.focus();
+      setToast("services: open");
     } else if (screen === "main") {
       renderer.focusRenderable(textarea);
       textarea.focus();
+      setToast("services: closed");
     }
     requestRender();
   };
@@ -1637,6 +1775,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
   const appendManagedEngineLog = (line: string, stream: "stdout" | "stderr") => {
     const entry = `[engine ${stream}] ${line}`;
     managedEngineLogLines = [...managedEngineLogLines, entry].slice(-200);
+    const existing = serviceLogs[engineLogName] ?? [];
+    serviceLogs = { ...serviceLogs, [engineLogName]: clampLines([...existing, entry], 400) };
     if (stream === "stderr") log.error(entry);
     else log.info(entry);
   };
@@ -1954,6 +2094,8 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
         "  Drag a PNG/JPG/WebP into the input to attach it (requires VLM).",
         "  Theme: set AGENTLOOP_THEME=forge|forge-core|noir before launch.",
         "  Chat style: set AGENTLOOP_CONVERSATION_STYLE=powerline.",
+        "  Ctrl+S opens the services sheet.",
+        "  Ctrl+L toggles logs.",
         "  Fast mode: AGENTLOOP_MLX_MODEL_QUICK + AGENTLOOP_MLX_MAX_TOKENS_QUICK.",
         "  Quick server: set AGENTLOOP_MLX_URL_QUICK to target a separate MLX instance.",
         "  Disable follow-up: AGENTLOOP_QUICK_FOLLOWUP=0.",
@@ -2613,6 +2755,20 @@ export async function runTui(options: { engineHost?: string; enginePort?: number
       applyScreenVisibility();
       updateAll();
       requestRender();
+      return;
+    }
+
+    // Toggle logs
+    if (key.ctrl && key.name === "l") {
+      key.preventDefault();
+      toggleLogsVisibility();
+      return;
+    }
+
+    // Services sheet
+    if (key.ctrl && key.name === "s") {
+      key.preventDefault();
+      setServicesSheetOpen(!servicesSheetOpen);
       return;
     }
 

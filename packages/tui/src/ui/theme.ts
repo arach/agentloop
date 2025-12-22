@@ -10,6 +10,9 @@ export type Theme = {
   dim2: string;
   selectionBg: string;
   selectionFg: string;
+  success: string;
+  warning: string;
+  danger: string;
 };
 
 export type ThemeName = "forge" | "forge-core" | "noir";
@@ -27,6 +30,9 @@ export const themes: Record<ThemeName, Theme> = {
     dim2: "#4f666e",
     selectionBg: "#223c44",
     selectionFg: "#e8f4f7",
+    success: "#5dc996",
+    warning: "#e3b341",
+    danger: "#e05d5d",
   },
   "forge-core": {
     bg: "#0b1f2b",
@@ -40,6 +46,9 @@ export const themes: Record<ThemeName, Theme> = {
     dim2: "#4f6b75",
     selectionBg: "#1f3b49",
     selectionFg: "#eef8fb",
+    success: "#58c89a",
+    warning: "#d6a645",
+    danger: "#e06060",
   },
   noir: {
     bg: "#0a0a0a",
@@ -53,6 +62,9 @@ export const themes: Record<ThemeName, Theme> = {
     dim2: "#5c5c5c",
     selectionBg: "#2a2a2a",
     selectionFg: "#ffffff",
+    success: "#6fd17a",
+    warning: "#f0c25e",
+    danger: "#e36f6f",
   },
 };
 

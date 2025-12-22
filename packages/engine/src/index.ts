@@ -22,6 +22,7 @@ import type { AgentPack } from "./operator/agentRegistry.js";
 import { loadAgentPacks } from "./operator/agentRegistry.js";
 import { buildChatMessages, composeSystemPrompt, loadWorkspacePrompt } from "./operator/promptStack.js";
 import { routeHeuristic } from "./operator/router.js";
+import { envNumber, envString } from "./utils/env.js";
 
 function isSimpleMessage(content: string): boolean {
   const trimmed = content.trim();
@@ -29,18 +30,6 @@ function isSimpleMessage(content: string): boolean {
   if (trimmed.startsWith("TOOL_CALL:")) return false;
   // Heuristic: short, single-turn chat is "simple".
   return trimmed.length <= 220 && trimmed.split(/\s+/).length <= 60;
-}
-
-function envNumber(key: string): number | undefined {
-  const raw = process.env[key];
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function envString(key: string): string | undefined {
-  const raw = process.env[key];
-  return raw ? raw : undefined;
 }
 
 function parseWorkbenchStrategies(raw: string | undefined): Array<WorkbenchStrategy["id"]> {

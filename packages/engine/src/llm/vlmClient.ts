@@ -1,3 +1,7 @@
+import { SERVICE_BY_NAME } from "@agentloop/core";
+import { envNumber, envString } from "../utils/env.js";
+import { joinUrl } from "../utils/url.js";
+
 type ChatContentBlock =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -15,27 +19,10 @@ export type VlmChatOptions = {
   temperature?: number;
 };
 
-function joinUrl(baseUrl: string, pathname: string): string {
-  const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  const normalizedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
-  return `${normalizedBase}${normalizedPath}`;
-}
-
-function envNumber(key: string): number | undefined {
-  const raw = process.env[key];
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function envString(key: string): string | undefined {
-  const raw = process.env[key];
-  return raw ? raw : undefined;
-}
-
 function defaultBaseUrl(): string {
-  const host = envString("VLM_HOST") ?? "127.0.0.1";
-  const port = envString("VLM_PORT") ?? "12346";
+  const defaults = SERVICE_BY_NAME.vlm;
+  const host = envString("VLM_HOST") ?? defaults.defaultHost;
+  const port = envString("VLM_PORT") ?? String(defaults.defaultPort);
   return `http://${host}:${port}`;
 }
 
